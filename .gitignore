@@ -1,0 +1,46 @@
+# ========================
+# Binaries & build outputs
+# ========================
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+
+# ========================
+# Coverage & profiling
+# ========================
+*.coverprofile
+*.cov
+coverage.txt
+
+# ========================
+# Go modules/workspaces
+# ========================
+go.work
+go.work.sum
+
+# ========================
+# Environment & secrets
+# ========================
+.env
+.env.local
+.env.*.local
+
+# Jangan ignore .env.example (tetap di-commit untuk dokumentasi)
+!*.example
+
+# ========================
+# OS & Editor junk
+# ========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
+*.log

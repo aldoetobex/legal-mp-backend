@@ -70,6 +70,9 @@ type CaseFile struct {
 	Size         int       `gorm:"not null"`
 	OriginalName string
 	CreatedAt    time.Time
+
+	// Tambahan: agar Preload("Case") dan cf.Case.* valid
+	Case Case `gorm:"foreignKey:CaseID;references:ID"`
 }
 
 type Quote struct {
