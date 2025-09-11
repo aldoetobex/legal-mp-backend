@@ -14,7 +14,35 @@ import (
 
 	"github.com/aldoetobex/legal-mp-backend/internal/auth"
 	"github.com/aldoetobex/legal-mp-backend/pkg/models"
+	"github.com/aldoetobex/legal-mp-backend/pkg/validation"
 )
+
+// ===== DTOs =====
+
+type UpsertQuoteRequest struct {
+	CaseID      string `json:"case_id" validate:"required,uuid4"`
+	AmountCents int    `json:"amount_cents" validate:"required,gte=100"` // min $1.00 if cents
+	Days        int    `json:"days" validate:"required,gte=1,lte=90"`
+	Note        string `json:"note" validate:"max=1000"`
+}
+
+type MyQuoteItem struct {
+	ID          string `json:"id"`
+	CaseID      string `json:"case_id"`
+	AmountCents int    `json:"amount_cents"`
+	Days        int    `json:"days"`
+	Note        string `json:"note"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type PageMyQuotes struct {
+	Page     int           `json:"page"`
+	PageSize int           `json:"pageSize"`
+	Total    int64         `json:"total"`
+	Pages    int           `json:"pages"`
+	Items    []MyQuoteItem `json:"items"`
+}
 
 type Handler struct {
 	db *gorm.DB
@@ -38,27 +66,36 @@ func parsePage(c *fiber.Ctx) (page, size int) {
 // POST /api/quotes (lawyer) — Upsert
 // =====================================
 
-type upsertReq struct {
-	CaseID      string `json:"case_id"`
-	AmountCents int    `json:"amount_cents"`
-	Days        int    `json:"days"`
-	Note        string `json:"note"`
-}
-
+// Upsert Quote godoc
+// @Summary      Submit or update a quote (1 active per case per lawyer)
+// @Description  Lawyer creates or updates a quote while the case is still OPEN
+// @Tags         quotes
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        payload  body  UpsertQuoteRequest  true  "Quote upsert payload"
+// @Success      201  {object}  map[string]any  "id, status, amount_cents, days, note"
+// @Failure      400  {object}  models.ValidationErrorResponse
+// @Failure      401  {object}  models.ErrorResponse
+// @Failure      404  {object}  models.ErrorResponse
+// @Failure      409  {object}  models.ErrorResponse  "immutable or case not open"
+// @Failure      500  {object}  models.ErrorResponse
+// @Router       /quotes [post]
 func (h *Handler) Upsert(c *fiber.Ctx) error {
 	lawyerIDStr := auth.MustUserID(c)
 
-	var in upsertReq
+	var in UpsertQuoteRequest
 	if err := c.BodyParser(&in); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid json")
 	}
-	in.CaseID = strings.TrimSpace(in.CaseID)
-	if in.CaseID == "" || in.AmountCents <= 0 || in.Days <= 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "case_id, amount_cents>0, days>0 required")
+	// Validation (Laravel-style)
+	if errs, _ := validation.Validate(in); errs != nil {
+		return validation.Respond(c, errs)
 	}
 
-	caseID, err := uuid.Parse(in.CaseID)
+	caseID, err := uuid.Parse(strings.TrimSpace(in.CaseID))
 	if err != nil {
+		// Defensive: should have been caught by validator uuid4
 		return fiber.NewError(fiber.StatusBadRequest, "invalid case_id")
 	}
 	lawyerID, _ := uuid.Parse(lawyerIDStr)
@@ -70,7 +107,7 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 		}
 	}()
 
-	// 1) Pastikan case masih OPEN (lock untuk menghindari race)
+	// 1) Ensure case is still OPEN (row lock to avoid race)
 	var cs models.Case
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		First(&cs, "id = ?", caseID).Error; err != nil {
@@ -86,12 +123,12 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "case is not open")
 	}
 
-	// 2) Cari quote existing untuk (case_id, lawyer_id)
+	// 2) Find existing quote for (case_id, lawyer_id)
 	var q models.Quote
 	err = tx.Where("case_id = ? AND lawyer_id = ?", caseID, lawyerID).First(&q).Error
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		// Insert baru
+		// Insert new
 		q = models.Quote{
 			CaseID:      caseID,
 			LawyerID:    lawyerID,
@@ -106,11 +143,8 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 			tx.Rollback()
 			return fiber.ErrInternalServerError
 		}
-		// (Opsional) Jika Anda telah menambah kolom denormalisasi quotes_count di models.Case:
-		// tx.Model(&models.Case{}).Where("id = ?", caseID).
-		//     UpdateColumn("quotes_count", gorm.Expr("quotes_count + 1"))
 	case err == nil:
-		// Update existing hanya jika masih PROPOSED
+		// Update only if still PROPOSED
 		if q.Status != models.QuoteProposed {
 			tx.Rollback()
 			return fiber.NewError(fiber.StatusConflict, "quote is immutable (already accepted/rejected)")
@@ -152,6 +186,20 @@ type myQuoteItem struct {
 	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
+// List My Quotes godoc
+// @Summary      List my quotes
+// @Description  Lawyer lists their quotes (filter by status, with pagination)
+// @Tags         quotes
+// @Security     BearerAuth
+// @Produce      json
+// @Param        page      query int    false "page"
+// @Param        pageSize  query int    false "pageSize"
+// @Param        status    query string false "proposed|accepted|rejected"
+// @Success      200  {object}  PageMyQuotes
+// @Failure      400  {object}  models.ErrorResponse
+// @Failure      401  {object}  models.ErrorResponse
+// @Failure      500  {object}  models.ErrorResponse
+// @Router       /quotes/mine [get]
 func (h *Handler) ListMine(c *fiber.Ctx) error {
 	lawyerID := auth.MustUserID(c)
 	page, size := parsePage(c)
@@ -187,7 +235,7 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 }
 
 // ============================================================
-// GET /api/cases/:id/quotes  (client owner melihat semua quote)
+// GET /api/cases/:id/quotes  (client owner views all quotes)
 // ============================================================
 
 type caseQuoteItem struct {
@@ -201,6 +249,21 @@ type caseQuoteItem struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// Quotes by Case godoc
+// @Summary      Quotes by case (owner)
+// @Description  Client owner sees all quotes for their case (paginated)
+// @Tags         quotes
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id        path  string true "case id (uuid)"
+// @Param        page      query int    false "page"
+// @Param        pageSize  query int    false "pageSize"
+// @Success      200  {object}  PageMyQuotes
+// @Failure      400  {object}  models.ErrorResponse
+// @Failure      401  {object}  models.ErrorResponse
+// @Failure      403  {object}  models.ErrorResponse
+// @Failure      500  {object}  models.ErrorResponse
+// @Router       /cases/{id}/quotes [get]
 func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 	clientID := auth.MustUserID(c)
 	caseID := c.Params("id")
@@ -208,7 +271,7 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid case id")
 	}
 
-	// Pastikan case ini milik client
+	// Ensure the case belongs to the requesting client
 	var cnt int64
 	if err := h.db.Model(&models.Case{}).
 		Where("id = ? AND client_id = ?", caseID, clientID).

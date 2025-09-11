@@ -60,6 +60,10 @@ type Case struct {
 
 	Files  []CaseFile
 	Quotes []Quote
+
+	EngagedAt        *time.Time // <— tambahkan
+	AcceptedQuoteID  uuid.UUID  // <— tambahkan
+	AcceptedLawyerID uuid.UUID  // <— tambahkan
 }
 
 type CaseFile struct {

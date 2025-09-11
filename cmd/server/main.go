@@ -1,3 +1,15 @@
+// @title           Mini Legal Marketplace API
+// @version         1.0
+// @description     API for a mini legal marketplace: clients post cases, lawyers submit quotes, clients accept & pay, and lawyers access files via signed URLs.
+// @contact.name    Aldo Rifki Putra
+// @contact.email   aldoetobex@gmail.com
+// @host            localhost:3000
+// @BasePath        /api
+// @schemes         http
+// @securityDefinitions.apikey BearerAuth
+// @in              header
+// @name            Authorization
+// @description     Format: Bearer <token>
 package main
 
 import (
@@ -10,12 +22,14 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/pkg/database"
 	"github.com/aldoetobex/legal-mp-backend/pkg/models"
 
-	// Tambahan:
+	// Docs
+	_ "github.com/aldoetobex/legal-mp-backend/docs" // change module path to match your repo
 	"github.com/aldoetobex/legal-mp-backend/internal/auth"
 	"github.com/aldoetobex/legal-mp-backend/internal/cases"
 	"github.com/aldoetobex/legal-mp-backend/internal/payments"
 	"github.com/aldoetobex/legal-mp-backend/internal/quotes"
 	"github.com/aldoetobex/legal-mp-backend/internal/storage"
+	fiberSwagger "github.com/gofiber/swagger"
 )
 
 func main() {
@@ -29,22 +43,14 @@ func main() {
 	}
 
 	app := fiber.New(fiber.Config{
-		ErrorHandler: func(c *fiber.Ctx, err error) error {
-			// Default to 500
-			code := fiber.StatusInternalServerError
-			if e, ok := err.(*fiber.Error); ok {
-				code = e.Code
-			}
-			return c.Status(code).JSON(fiber.Map{
-				"error":   true,
-				"message": err.Error(),
-			})
-		},
+		ErrorHandler: auth.ErrorHandler, // or your middleware package
 	})
 
 	app.Get("/health", func(c *fiber.Ctx) error { return c.JSON(fiber.Map{"status": "ok"}) })
 
 	api := app.Group("/api")
+
+	app.Get("/swagger/*", fiberSwagger.HandlerDefault)
 
 	// Auth
 	authH := auth.NewHandler(db)
@@ -55,7 +61,7 @@ func main() {
 	})
 
 	// Storage helper
-	sb := storage.NewSupabase() // pakai SUPABASE_URL / SUPABASE_SECRET_KEY / SUPABASE_BUCKET
+	sb := storage.NewSupabase() // uses SUPABASE_URL / SUPABASE_SECRET_KEY / SUPABASE_BUCKET
 
 	// Cases
 	caseH := cases.NewHandler(db, sb)
@@ -68,20 +74,22 @@ func main() {
 	api.Get("/marketplace", auth.RequireAuth(), auth.RequireRole("lawyer"), caseH.Marketplace)
 	api.Get("/files/:fileID/signed-url", auth.RequireAuth(), caseH.SignedDownloadURL)
 
+	// Quotes
 	quoteH := quotes.NewHandler(db)
-
 	// Lawyer — upsert & my quotes
 	api.Post("/quotes", auth.RequireAuth(), auth.RequireRole("lawyer"), quoteH.Upsert)
 	api.Get("/quotes/mine", auth.RequireAuth(), auth.RequireRole("lawyer"), quoteH.ListMine)
-
-	// Client — lihat semua quotes untuk case miliknya
+	// Client — view all quotes for their case
 	api.Get("/cases/:id/quotes", auth.RequireAuth(), auth.RequireRole("client"), quoteH.ListByCaseForOwner)
 
+	// Payments
 	payH := payments.NewHandler(db)
-
 	api.Post("/checkout/:quoteID", auth.RequireAuth(), auth.RequireRole("client"), payH.CreateCheckout)
 
-	// Hanya saat APP_ENV=dev dan PAYMENT_PROVIDER=mock:
+	// Stripe Webhook (server-only, no auth)
+	api.Post("/payments/stripe/webhook", payH.StripeWebhook)
+
+	// Only in dev mode with mock payment provider
 	if os.Getenv("APP_ENV") == "dev" && os.Getenv("PAYMENT_PROVIDER") == "mock" {
 		api.Post("/payments/mock/complete", payH.MockComplete) // Protected by X-Dev-Secret
 	}

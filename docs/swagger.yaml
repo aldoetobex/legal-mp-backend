@@ -1,0 +1,817 @@
+basePath: /api
+definitions:
+  auth.AuthResponse:
+    properties:
+      role:
+        type: string
+      token:
+        type: string
+    type: object
+  auth.LoginRequest:
+    properties:
+      email:
+        maxLength: 60
+        type: string
+      password:
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  auth.SignupRequest:
+    properties:
+      bar_number:
+        maxLength: 40
+        type: string
+      email:
+        maxLength: 60
+        type: string
+      jurisdiction:
+        maxLength: 40
+        type: string
+      name:
+        maxLength: 80
+        type: string
+      password:
+        minLength: 8
+        type: string
+      role:
+        enum:
+        - client
+        - lawyer
+        type: string
+    required:
+    - email
+    - password
+    - role
+    type: object
+  cases.CaseListItem:
+    properties:
+      category:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      quotes:
+        type: integer
+      status:
+        type: string
+      title:
+        type: string
+    type: object
+  cases.CreateCaseRequest:
+    properties:
+      category:
+        maxLength: 40
+        type: string
+      description:
+        maxLength: 2000
+        type: string
+      title:
+        maxLength: 120
+        type: string
+    required:
+    - category
+    - title
+    type: object
+  cases.PageCases:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/cases.CaseListItem'
+        type: array
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      pages:
+        type: integer
+      total:
+        type: integer
+    type: object
+  models.Case:
+    properties:
+      acceptedLawyerID:
+        description: <— tambahkan
+        type: string
+      acceptedQuoteID:
+        description: <— tambahkan
+        type: string
+      category:
+        type: string
+      clientID:
+        type: string
+      createdAt:
+        type: string
+      description:
+        type: string
+      engagedAt:
+        description: <— tambahkan
+        type: string
+      files:
+        items:
+          $ref: '#/definitions/models.CaseFile'
+        type: array
+      id:
+        type: string
+      quotes:
+        items:
+          $ref: '#/definitions/models.Quote'
+        type: array
+      status:
+        $ref: '#/definitions/models.CaseStatus'
+      title:
+        type: string
+    type: object
+  models.CaseFile:
+    properties:
+      case:
+        allOf:
+        - $ref: '#/definitions/models.Case'
+        description: 'Tambahan: agar Preload("Case") dan cf.Case.* valid'
+      caseID:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: string
+      key:
+        type: string
+      mime:
+        type: string
+      originalName:
+        type: string
+      size:
+        type: integer
+    type: object
+  models.CaseStatus:
+    enum:
+    - open
+    - engaged
+    - closed
+    - cancelled
+    type: string
+    x-enum-varnames:
+    - CaseOpen
+    - CaseEngaged
+    - CaseClosed
+    - CaseCancelled
+  models.ErrorResponse:
+    properties:
+      code:
+        example: FORBIDDEN
+        type: string
+      error:
+        example: true
+        type: boolean
+      message:
+        example: Forbidden
+        type: string
+    type: object
+  models.Quote:
+    properties:
+      amountCents:
+        type: integer
+      caseID:
+        type: string
+      createdAt:
+        type: string
+      days:
+        type: integer
+      id:
+        type: string
+      lawyerID:
+        type: string
+      note:
+        type: string
+      status:
+        $ref: '#/definitions/models.QuoteStatus'
+      updatedAt:
+        type: string
+    type: object
+  models.QuoteStatus:
+    enum:
+    - proposed
+    - accepted
+    - rejected
+    type: string
+    x-enum-varnames:
+    - QuoteProposed
+    - QuoteAccepted
+    - QuoteRejected
+  models.ValidationErrorResponse:
+    properties:
+      errors:
+        additionalProperties:
+          items:
+            type: string
+          type: array
+        type: object
+      message:
+        example: Validation failed
+        type: string
+    type: object
+  payments.CheckoutResponse:
+    properties:
+      payment_id:
+        type: string
+      provider:
+        type: string
+      redirect_url:
+        type: string
+    type: object
+  payments.MockCompleteRequest:
+    properties:
+      payment_id:
+        type: string
+    type: object
+  quotes.MyQuoteItem:
+    properties:
+      amount_cents:
+        type: integer
+      case_id:
+        type: string
+      created_at:
+        type: string
+      days:
+        type: integer
+      id:
+        type: string
+      note:
+        type: string
+      status:
+        type: string
+    type: object
+  quotes.PageMyQuotes:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/quotes.MyQuoteItem'
+        type: array
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      pages:
+        type: integer
+      total:
+        type: integer
+    type: object
+  quotes.UpsertQuoteRequest:
+    properties:
+      amount_cents:
+        description: min $1.00 if cents
+        minimum: 100
+        type: integer
+      case_id:
+        type: string
+      days:
+        maximum: 90
+        minimum: 1
+        type: integer
+      note:
+        maxLength: 1000
+        type: string
+    required:
+    - amount_cents
+    - case_id
+    - days
+    type: object
+host: localhost:3000
+info:
+  contact:
+    email: aldoetobex@gmail.com
+    name: Aldo Rifki Putra
+  description: 'API for a mini legal marketplace: clients post cases, lawyers submit
+    quotes, clients accept & pay, and lawyers access files via signed URLs.'
+  title: Mini Legal Marketplace API
+  version: "1.0"
+paths:
+  /cases:
+    post:
+      consumes:
+      - application/json
+      description: Client creates a new case
+      parameters:
+      - description: Case payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/cases.CreateCaseRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: id
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ValidationErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create case
+      tags:
+      - cases
+  /cases/{id}:
+    get:
+      description: Client gets their case detail (with files & quotes)
+      parameters:
+      - description: case id (uuid)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Case'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Case detail (owner)
+      tags:
+      - cases
+  /cases/{id}/files:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Client (owner) uploads up to 10 files to Supabase Storage
+      parameters:
+      - description: case id (uuid)
+        in: path
+        name: id
+        required: true
+        type: string
+      - collectionFormat: csv
+        description: PDF/PNG (max 10)
+        in: formData
+        items:
+          type: file
+        name: files
+        required: true
+        type: array
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: id, key, name, size
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Upload multiple case files (PDF/PNG)
+      tags:
+      - files
+  /cases/{id}/quotes:
+    get:
+      description: Client owner sees all quotes for their case (paginated)
+      parameters:
+      - description: case id (uuid)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: page
+        in: query
+        name: page
+        type: integer
+      - description: pageSize
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/quotes.PageMyQuotes'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Quotes by case (owner)
+      tags:
+      - quotes
+  /cases/mine:
+    get:
+      description: Client lists their own cases (paginated)
+      parameters:
+      - description: page
+        in: query
+        name: page
+        type: integer
+      - description: pageSize
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cases.PageCases'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List my cases
+      tags:
+      - cases
+  /checkout/{quoteID}:
+    post:
+      description: Client selects a quote → create a Stripe Checkout Session (server-side)
+      parameters:
+      - description: quote id (uuid)
+        in: path
+        name: quoteID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/payments.CheckoutResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create checkout (Stripe)
+      tags:
+      - payments
+  /files/{fileID}/signed-url:
+    get:
+      description: Client owner or the accepted lawyer obtains a short-lived signed
+        URL
+      parameters:
+      - description: file id (uuid)
+        in: path
+        name: fileID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: url, expires_in, now
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get signed URL
+      tags:
+      - files
+  /login:
+    post:
+      consumes:
+      - application/json
+      description: Login dan dapatkan JWT
+      parameters:
+      - description: Login payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/auth.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/auth.AuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ValidationErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      summary: Login
+      tags:
+      - auth
+  /marketplace:
+    get:
+      description: Lawyer browses OPEN cases (server-side filters & pagination; no
+        client identity)
+      parameters:
+      - description: page
+        in: query
+        name: page
+        type: integer
+      - description: pageSize
+        in: query
+        name: pageSize
+        type: integer
+      - description: category
+        in: query
+        name: category
+        type: string
+      - description: YYYY-MM-DD (Asia/Singapore)
+        in: query
+        name: created_since
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/cases.PageCases'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Marketplace (anonymized)
+      tags:
+      - marketplace
+  /payments/mock/complete:
+    post:
+      consumes:
+      - application/json
+      description: 'Dev-only: finalize payment and set a single winner (atomic transaction)'
+      parameters:
+      - description: Payment ID
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/payments.MockCompleteRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: ok
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: X-Dev-Secret invalid
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      summary: Complete payment (mock)
+      tags:
+      - payments
+  /payments/stripe/webhook:
+    post:
+      consumes:
+      - application/json
+      description: Verify signature and finalize payment (checkout.session.completed)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: ok
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      summary: Stripe webhook endpoint
+      tags:
+      - payments
+  /quotes:
+    post:
+      consumes:
+      - application/json
+      description: Lawyer creates or updates a quote while the case is still OPEN
+      parameters:
+      - description: Quote upsert payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/quotes.UpsertQuoteRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: id, status, amount_cents, days, note
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ValidationErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: immutable or case not open
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Submit or update a quote (1 active per case per lawyer)
+      tags:
+      - quotes
+  /quotes/mine:
+    get:
+      description: Lawyer lists their quotes (filter by status, with pagination)
+      parameters:
+      - description: page
+        in: query
+        name: page
+        type: integer
+      - description: pageSize
+        in: query
+        name: pageSize
+        type: integer
+      - description: proposed|accepted|rejected
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/quotes.PageMyQuotes'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List my quotes
+      tags:
+      - quotes
+  /signup:
+    post:
+      consumes:
+      - application/json
+      description: Register user baru (client atau lawyer)
+      parameters:
+      - description: Signup payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/auth.SignupRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/auth.AuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ValidationErrorResponse'
+        "409":
+          description: email already exists
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      summary: Sign up
+      tags:
+      - auth
+schemes:
+- http
+securityDefinitions:
+  BearerAuth:
+    description: 'Format: Bearer <token>'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aldoetobex/legal-mp-backend/pkg/models"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -15,6 +16,19 @@ type Claims struct {
 	Role string `json:"role"`
 	jwt.RegisteredClaims
 }
+
+// func ErrorHandler(c *fiber.Ctx, err error) error {
+// 	if fe, ok := err.(*fiber.Error); ok {
+// 		return c.Status(fe.Code).JSON(models.ErrorResponse{
+// 			Error:   true,
+// 			Message: fe.Message,
+// 		})
+// 	}
+// 	return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+// 		Error:   true,
+// 		Message: "Internal Server Error",
+// 	})
+// }
 
 func IssueToken(userID, role string) (string, error) {
 	claims := &Claims{
@@ -73,4 +87,60 @@ func RequireRole(role string) fiber.Handler {
 		}
 		return c.Next()
 	}
+}
+
+func httpCodeToString(code int) string {
+	switch code {
+	case fiber.StatusBadRequest:
+		return "BAD_REQUEST"
+	case fiber.StatusUnauthorized:
+		return "UNAUTHORIZED"
+	case fiber.StatusForbidden:
+		return "FORBIDDEN"
+	case fiber.StatusNotFound:
+		return "NOT_FOUND"
+	case fiber.StatusConflict:
+		return "CONFLICT"
+	case fiber.StatusUnprocessableEntity:
+		return "UNPROCESSABLE_ENTITY"
+	case fiber.StatusRequestEntityTooLarge:
+		return "PAYLOAD_TOO_LARGE"
+	default:
+		return "INTERNAL_SERVER_ERROR"
+	}
+}
+
+// ErrorHandler is a global Fiber error handler to return a consistent JSON shape.
+func ErrorHandler(c *fiber.Ctx, err error) error {
+	// default values
+	code := fiber.StatusInternalServerError
+	msg := "Internal Server Error"
+
+	// Fiber errors keep status code
+	if e, ok := err.(*fiber.Error); ok {
+		code = e.Code
+		if strings.TrimSpace(e.Message) != "" {
+			msg = e.Message
+		} else {
+			msg = fiber.ErrInternalServerError.Message
+			switch code {
+			case fiber.StatusBadRequest:
+				msg = fiber.ErrBadRequest.Message
+			case fiber.StatusUnauthorized:
+				msg = fiber.ErrUnauthorized.Message
+			case fiber.StatusForbidden:
+				msg = fiber.ErrForbidden.Message
+			case fiber.StatusNotFound:
+				msg = fiber.ErrNotFound.Message
+			case fiber.StatusConflict:
+				msg = fiber.ErrConflict.Message
+			}
+		}
+	}
+
+	return c.Status(code).JSON(models.ErrorResponse{
+		Code:    httpCodeToString(code),
+		Error:   true,
+		Message: msg,
+	})
 }
