@@ -278,7 +278,6 @@ definitions:
     - case_id
     - days
     type: object
-host: localhost:3000
 info:
   contact:
     email: aldoetobex@gmail.com
