@@ -806,6 +806,7 @@ paths:
       tags:
       - auth
 schemes:
+- https
 - http
 securityDefinitions:
   BearerAuth:

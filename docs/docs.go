@@ -1246,7 +1246,7 @@ var SwaggerInfo = &swag.Spec{
 	Version:          "1.0",
 	Host:             "",
 	BasePath:         "/api",
-	Schemes:          []string{"http"},
+	Schemes:          []string{"https", "http"},
 	Title:            "Mini Legal Marketplace API",
 	Description:      "API for a mini legal marketplace: clients post cases, lawyers submit quotes, clients accept & pay, and lawyers access files via signed URLs.",
 	InfoInstanceName: "swagger",
