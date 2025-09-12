@@ -3,7 +3,6 @@
 // @description     API for a mini legal marketplace: clients post cases, lawyers submit quotes, clients accept & pay, and lawyers access files via signed URLs.
 // @contact.name    Aldo Rifki Putra
 // @contact.email   aldoetobex@gmail.com
-// @host            localhost:3000
 // @BasePath        /api
 // @schemes         http
 // @securityDefinitions.apikey BearerAuth
