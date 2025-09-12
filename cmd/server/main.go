@@ -4,7 +4,7 @@
 // @contact.name    Aldo Rifki Putra
 // @contact.email   aldoetobex@gmail.com
 // @BasePath        /api
-// @schemes         http
+// @schemes         https http
 // @securityDefinitions.apikey BearerAuth
 // @in              header
 // @name            Authorization
