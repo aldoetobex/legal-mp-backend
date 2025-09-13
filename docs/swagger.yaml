@@ -45,6 +45,13 @@ definitions:
     - password
     - role
     type: object
+  cases.ActionRequest:
+    properties:
+      comment:
+        description: optional note shown in history
+        maxLength: 500
+        type: string
+    type: object
   cases.CaseListItem:
     properties:
       category:
@@ -261,7 +268,16 @@ definitions:
     properties:
       amount_cents:
         type: integer
+      case_category:
+        description: optional
+        type: string
       case_id:
+        type: string
+      case_status:
+        description: optional
+        type: string
+      case_title:
+        description: <—
         type: string
       created_at:
         type: string
@@ -292,7 +308,6 @@ definitions:
   quotes.UpsertQuoteRequest:
     properties:
       amount_cents:
-        description: min $1.00 if cents
         minimum: 100
         type: integer
       case_id:
@@ -354,7 +369,8 @@ paths:
       - cases
   /cases/{id}:
     get:
-      description: Client gets their case detail (with files & quotes)
+      description: Client owner atau lawyer yang diterima (engaged) dapat melihat
+        detail & files
       parameters:
       - description: case id (uuid)
         in: path
@@ -372,13 +388,105 @@ paths:
           description: Unauthorized
           schema:
             $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
         "404":
           description: Not Found
           schema:
             $ref: '#/definitions/models.ErrorResponse'
       security:
       - BearerAuth: []
-      summary: Case detail (owner)
+      summary: Case detail (owner or accepted lawyer)
+      tags:
+      - cases
+  /cases/{id}/cancel:
+    post:
+      consumes:
+      - application/json
+      description: Client cancels their own case (only if still open)
+      parameters:
+      - description: case id (uuid)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Optional comment
+        in: body
+        name: payload
+        schema:
+          $ref: '#/definitions/cases.ActionRequest'
+      responses:
+        "200":
+          description: status
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cancel case
+      tags:
+      - cases
+  /cases/{id}/close:
+    post:
+      consumes:
+      - application/json
+      description: Client closes their own case (only if engaged)
+      parameters:
+      - description: case id (uuid)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Optional comment
+        in: body
+        name: payload
+        schema:
+          $ref: '#/definitions/cases.ActionRequest'
+      responses:
+        "200":
+          description: status
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Close case
       tags:
       - cases
   /cases/{id}/files:
@@ -709,7 +817,8 @@ paths:
       - quotes
   /quotes/mine:
     get:
-      description: Lawyer lists their quotes (filter by status, with pagination)
+      description: Lawyer lists their quotes (filter by status, with pagination).
+        Includes case title.
       parameters:
       - description: page
         in: query

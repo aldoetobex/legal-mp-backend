@@ -124,14 +124,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Client gets their case detail (with files \u0026 quotes)",
+                "description": "Client owner atau lawyer yang diterima (engaged) dapat melihat detail \u0026 files",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "cases"
                 ],
-                "summary": "Case detail (owner)",
+                "summary": "Case detail (owner or accepted lawyer)",
                 "parameters": [
                     {
                         "type": "string",
@@ -154,8 +154,152 @@ const docTemplate = `{
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/cases/{id}/cancel": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Client cancels their own case (only if still open)",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cases"
+                ],
+                "summary": "Cancel case",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "case id (uuid)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional comment",
+                        "name": "payload",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/cases.ActionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "status",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/cases/{id}/close": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Client closes their own case (only if engaged)",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cases"
+                ],
+                "summary": "Close case",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "case id (uuid)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional comment",
+                        "name": "payload",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/cases.ActionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "status",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
@@ -628,7 +772,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Lawyer lists their quotes (filter by status, with pagination)",
+                "description": "Lawyer lists their quotes (filter by status, with pagination). Includes case title.",
                 "produces": [
                     "application/json"
                 ],
@@ -793,6 +937,16 @@ const docTemplate = `{
                         "client",
                         "lawyer"
                     ]
+                }
+            }
+        },
+        "cases.ActionRequest": {
+            "type": "object",
+            "properties": {
+                "comment": {
+                    "description": "optional note shown in history",
+                    "type": "string",
+                    "maxLength": 500
                 }
             }
         },
@@ -1117,7 +1271,19 @@ const docTemplate = `{
                 "amount_cents": {
                     "type": "integer"
                 },
+                "case_category": {
+                    "description": "optional",
+                    "type": "string"
+                },
                 "case_id": {
+                    "type": "string"
+                },
+                "case_status": {
+                    "description": "optional",
+                    "type": "string"
+                },
+                "case_title": {
+                    "description": "\u003c—",
                     "type": "string"
                 },
                 "created_at": {
@@ -1169,7 +1335,6 @@ const docTemplate = `{
             ],
             "properties": {
                 "amount_cents": {
-                    "description": "min $1.00 if cents",
                     "type": "integer",
                     "minimum": 100
                 },
