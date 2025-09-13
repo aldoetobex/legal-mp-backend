@@ -87,7 +87,7 @@ func main() {
 	// Client
 	api.Post("/cases", auth.RequireAuth(), auth.RequireRole("client"), caseH.Create)
 	api.Get("/cases/mine", auth.RequireAuth(), auth.RequireRole("client"), caseH.ListMine)
-	api.Get("/cases/:id", auth.RequireAuth(), auth.RequireRole("client"), caseH.GetDetail)
+	api.Get("/cases/:id", auth.RequireAuth(), caseH.GetDetail)
 	api.Post("/cases/:id/files", auth.RequireAuth(), auth.RequireRole("client"), caseH.UploadFile)
 	// Lawyer
 	api.Get("/marketplace", auth.RequireAuth(), auth.RequireRole("lawyer"), caseH.Marketplace)
@@ -99,7 +99,7 @@ func main() {
 	api.Post("/quotes", auth.RequireAuth(), auth.RequireRole("lawyer"), quoteH.Upsert)
 	api.Get("/quotes/mine", auth.RequireAuth(), auth.RequireRole("lawyer"), quoteH.ListMine)
 	// Client — view all quotes for their case
-	api.Get("/cases/:id/quotes", auth.RequireAuth(), auth.RequireRole("client"), quoteH.ListByCaseForOwner)
+	api.Get("/cases/:id/quotes", auth.RequireAuth(), quoteH.ListByCaseForOwner)
 
 	// Payments
 	payH := payments.NewHandler(db)
