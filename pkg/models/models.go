@@ -102,3 +102,15 @@ type Payment struct {
 	Status              PayStatus `gorm:"type:varchar(20);default:'initiated'"`
 	CreatedAt           time.Time
 }
+
+// Audit log untuk setiap perubahan penting pada Case
+type CaseHistory struct {
+	ID        uuid.UUID  `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
+	CaseID    uuid.UUID  `gorm:"type:uuid;not null;index"`
+	ActorID   uuid.UUID  `gorm:"type:uuid;not null;index"`  // siapa yang melakukan (client/lawyer/system)
+	Action    string     `gorm:"type:varchar(50);not null"` // created, quote_submitted, accepted_quote, paid, cancelled, closed, dll
+	OldStatus CaseStatus `gorm:"type:varchar(20)"`
+	NewStatus CaseStatus `gorm:"type:varchar(20)"`
+	Reason    string     `gorm:"type:text"` // optional komentar/penjelasan
+	CreatedAt time.Time  `gorm:"autoCreateTime"`
+}

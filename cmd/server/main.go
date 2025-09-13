@@ -37,7 +37,7 @@ func main() {
 
 	db := database.Init()
 	if err := db.AutoMigrate(
-		&models.User{}, &models.Case{}, &models.CaseFile{}, &models.Quote{}, &models.Payment{},
+		&models.User{}, &models.Case{}, &models.CaseFile{}, &models.Quote{}, &models.Payment{}, &models.CaseHistory{},
 	); err != nil {
 		log.Fatal("migration failed:", err)
 	}
@@ -89,6 +89,9 @@ func main() {
 	api.Get("/cases/mine", auth.RequireAuth(), auth.RequireRole("client"), caseH.ListMine)
 	api.Get("/cases/:id", auth.RequireAuth(), caseH.GetDetail)
 	api.Post("/cases/:id/files", auth.RequireAuth(), auth.RequireRole("client"), caseH.UploadFile)
+
+	api.Post("/cases/:id/cancel", auth.RequireAuth(), auth.RequireRole("client"), caseH.Cancel)
+	api.Post("/cases/:id/close", auth.RequireAuth(), auth.RequireRole("client"), caseH.Close)
 	// Lawyer
 	api.Get("/marketplace", auth.RequireAuth(), auth.RequireRole("lawyer"), caseH.Marketplace)
 	api.Get("/files/:fileID/signed-url", auth.RequireAuth(), caseH.SignedDownloadURL)

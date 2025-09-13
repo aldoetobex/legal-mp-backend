@@ -1,6 +1,7 @@
 package cases
 
 import (
+	"context"
 	"math"
 	"strconv"
 	"strings"
@@ -23,6 +24,10 @@ type CreateCaseRequest struct {
 	Title       string `json:"title" validate:"required,max=120"`
 	Category    string `json:"category" validate:"required,max=40"`
 	Description string `json:"description" validate:"max=2000"`
+}
+
+type ActionRequest struct {
+	Comment string `json:"comment" validate:"max=500"` // optional note shown in history
 }
 
 type CaseListItem struct {
@@ -84,6 +89,10 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 	if err := h.db.Create(&cs).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
+
+	// Log: created
+	LogCaseHistory(c.Context(), h.db, cs.ID, clientUUID, "created", "", models.CaseOpen, "case created")
+
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": cs.ID})
 }
 
@@ -150,10 +159,25 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		rows = []caseWithCounts{}
 	}
 
+	// Map ke DTO stabil
+	items := make([]CaseListItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, CaseListItem{
+			ID:        r.ID.String(),
+			Title:     r.Title,
+			Category:  r.Category,
+			Status:    r.Status,
+			CreatedAt: r.CreatedAt.Format(time.RFC3339),
+			Quotes:    r.Quotes,
+		})
+	}
+
 	return c.JSON(fiber.Map{
-		"page": page, "pageSize": size, "total": total,
-		"pages": int(math.Ceil(float64(total) / float64(size))),
-		"items": rows, // selalu [] saat kosong
+		"page":     page,
+		"pageSize": size,
+		"total":    total,
+		"pages":    int(math.Ceil(float64(total) / float64(size))),
+		"items":    items, // selalu [] saat kosong
 	})
 }
 
@@ -198,8 +222,7 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		if cs.Status != models.CaseEngaged || cs.AcceptedLawyerID.String() != userID {
 			return fiber.ErrForbidden
 		}
-		// Opsional: batasi quotes yang dikirim ke FE agar tidak membocorkan kompetitor
-		// kirim hanya quote yang diterima (miliknya sendiri)
+		// Batasi quotes yang dikirim ke FE: hanya quote yang diterima (miliknya sendiri)
 		if cs.AcceptedQuoteID != uuid.Nil {
 			var q models.Quote
 			if err := h.db.First(&q, "id = ?", cs.AcceptedQuoteID).Error; err == nil {
@@ -264,12 +287,14 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 	category := strings.TrimSpace(c.Query("category"))
 	createdSince := c.Query("created_since") // ISO date (YYYY-MM-DD)
 
-	var since *time.Time
+	// Parse created_since in Asia/Singapore, simpan sebagai UTC untuk konsistensi dengan DB
+	var sinceUTC *time.Time
 	if createdSince != "" {
 		if t, err := time.Parse("2006-01-02", createdSince); err == nil {
 			loc, _ := time.LoadLocation("Asia/Singapore")
-			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
-			since = &t
+			local := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+			utc := local.UTC()
+			sinceUTC = &utc
 		}
 	}
 
@@ -277,8 +302,8 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 	if category != "" {
 		dbq = dbq.Where("category = ?", category)
 	}
-	if since != nil {
-		dbq = dbq.Where("created_at >= ?", *since)
+	if sinceUTC != nil {
+		dbq = dbq.Where("created_at >= ?", *sinceUTC)
 	}
 
 	var total int64
@@ -294,13 +319,13 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Ambil semua case_id yang sudah pernah di-quote oleh lawyer ini,
-	// dibatasi hanya pada case yang tampil di halaman ini (IN (?)) -> efisien & mencegah N+1.
+	// Ambil semua case_id yang ada di halaman ini
 	caseIDs := make([]uuid.UUID, 0, len(list))
 	for _, cs := range list {
 		caseIDs = append(caseIDs, cs.ID)
 	}
 
+	// Cek mana yang sudah di-quote oleh lawyer (tanpa N+1)
 	quotedMap := map[uuid.UUID]bool{}
 	if len(caseIDs) > 0 {
 		var quotedIDs []uuid.UUID
@@ -341,4 +366,115 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 		Pages:    int(math.Ceil(float64(total) / float64(size))),
 		Items:    items,
 	})
+}
+
+// Cancel Case godoc
+// @Summary      Cancel case
+// @Description  Client cancels their own case (only if still open)
+// @Tags         cases
+// @Security     BearerAuth
+// @Accept       json
+// @Param        id       path  string         true "case id (uuid)"
+// @Param        payload  body  ActionRequest  false "Optional comment"
+// @Success      200  {object}  map[string]string  "status"
+// @Failure      401  {object}  models.ErrorResponse
+// @Failure      403  {object}  models.ErrorResponse
+// @Failure      404  {object}  models.ErrorResponse
+// @Failure      409  {object}  models.ErrorResponse
+// @Router       /cases/{id}/cancel [post]
+func (h *Handler) Cancel(c *fiber.Ctx) error {
+	clientID := auth.MustUserID(c)
+	id := c.Params("id")
+
+	// Parse optional comment
+	var in ActionRequest
+	_ = c.BodyParser(&in)
+	if errs, _ := validation.Validate(in); errs != nil {
+		return validation.Respond(c, errs)
+	}
+
+	var cs models.Case
+	if err := h.db.First(&cs, "id = ?", id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fiber.ErrNotFound
+		}
+		return fiber.ErrInternalServerError
+	}
+	if cs.ClientID.String() != clientID {
+		return fiber.ErrForbidden
+	}
+	if cs.Status != models.CaseOpen {
+		return fiber.NewError(fiber.StatusConflict, "case cannot be cancelled")
+	}
+
+	old := cs.Status
+	if err := h.db.Model(&cs).Update("status", models.CaseCancelled).Error; err != nil {
+		return fiber.ErrInternalServerError
+	}
+	// Log history
+	LogCaseHistory(c.Context(), h.db, cs.ID, uuid.MustParse(clientID), "cancelled", old, models.CaseCancelled, strings.TrimSpace(in.Comment))
+
+	return c.JSON(fiber.Map{"status": "cancelled"})
+}
+
+// Close Case godoc
+// @Summary      Close case
+// @Description  Client closes their own case (only if engaged)
+// @Tags         cases
+// @Security     BearerAuth
+// @Accept       json
+// @Param        id       path  string         true  "case id (uuid)"
+// @Param        payload  body  ActionRequest  false "Optional comment"
+// @Success      200  {object}  map[string]string  "status"
+// @Failure      401  {object}  models.ErrorResponse
+// @Failure      403  {object}  models.ErrorResponse
+// @Failure      404  {object}  models.ErrorResponse
+// @Failure      409  {object}  models.ErrorResponse
+// @Router       /cases/{id}/close [post]
+func (h *Handler) Close(c *fiber.Ctx) error {
+	clientID := auth.MustUserID(c)
+	id := c.Params("id")
+
+	// Parse optional comment
+	var in ActionRequest
+	_ = c.BodyParser(&in)
+	if errs, _ := validation.Validate(in); errs != nil {
+		return validation.Respond(c, errs)
+	}
+
+	var cs models.Case
+	if err := h.db.First(&cs, "id = ?", id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fiber.ErrNotFound
+		}
+		return fiber.ErrInternalServerError
+	}
+	if cs.ClientID.String() != clientID {
+		return fiber.ErrForbidden
+	}
+	if cs.Status != models.CaseEngaged {
+		return fiber.NewError(fiber.StatusConflict, "only engaged cases can be closed")
+	}
+
+	old := cs.Status
+	if err := h.db.Model(&cs).Update("status", models.CaseClosed).Error; err != nil {
+		return fiber.ErrInternalServerError
+	}
+	// Log history
+	LogCaseHistory(c.Context(), h.db, cs.ID, uuid.MustParse(clientID), "closed", old, models.CaseClosed, strings.TrimSpace(in.Comment))
+
+	return c.JSON(fiber.Map{"status": "closed"})
+}
+
+// === Shared helper ===
+func LogCaseHistory(ctx context.Context, db *gorm.DB, caseID, actorID uuid.UUID, action string, oldS, newS models.CaseStatus, reason string) {
+	_ = db.WithContext(ctx).Create(&models.CaseHistory{
+		CaseID:    caseID,
+		ActorID:   actorID,
+		Action:    action,
+		OldStatus: oldS,
+		NewStatus: newS,
+		Reason:    reason,
+		CreatedAt: time.Now(),
+	}).Error
 }
