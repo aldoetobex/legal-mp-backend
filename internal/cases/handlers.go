@@ -47,6 +47,28 @@ type PageCases struct {
 	Items    []CaseListItem `json:"items"`
 }
 
+// Profil publik yang aman dikirim ke FE
+type publicLawyer struct {
+	ID           uuid.UUID `json:"id"`
+	Name         string    `json:"name"`
+	Email        string    `json:"email"`
+	Jurisdiction string    `json:"jurisdiction,omitempty"`
+	BarNumber    string    `json:"bar_number,omitempty"`
+}
+
+type publicClient struct {
+	ID    uuid.UUID `json:"id"`
+	Name  string    `json:"name"`
+	Email string    `json:"email"`
+}
+
+// Bungkus response agar bisa tambah field counterpart
+type caseWithParties struct {
+	models.Case
+	AcceptedLawyer *publicLawyer `json:"accepted_lawyer,omitempty"`
+	Client         *publicClient `json:"client,omitempty"`
+}
+
 type Handler struct {
 	db *gorm.DB
 	sb *storage.Supabase
@@ -183,7 +205,10 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 
 // GetDetail godoc
 // @Summary      Case detail (owner or accepted lawyer)
-// @Description  Client owner atau lawyer yang diterima (engaged) dapat melihat detail & files
+// @Description  Client owner atau lawyer yang diterima (engaged) dapat melihat detail & files.
+//
+//	Jika status engaged: client melihat accepted_lawyer, lawyer melihat client.
+//
 // @Tags         cases
 // @Security     BearerAuth
 // @Produce      json
@@ -210,19 +235,45 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Authorization:
+	// Pastikan slices tidak null (normalisasi awal)
+	if cs.Files == nil {
+		cs.Files = []models.CaseFile{}
+	}
+	if cs.Quotes == nil {
+		cs.Quotes = []models.Quote{}
+	}
+
+	// Authorization + tailor response
 	switch role {
 	case string(models.RoleClient):
 		// hanya owner
 		if cs.ClientID.String() != userID {
 			return fiber.ErrForbidden
 		}
+
+		// Jika engaged dan ada AcceptedLawyerID, kirim identitas lawyer
+		if cs.Status == models.CaseEngaged && cs.AcceptedLawyerID != uuid.Nil {
+			var lw publicLawyer
+			_ = h.db.Model(&models.User{}).
+				Select("id, name, email, jurisdiction, bar_number").
+				First(&lw, "id = ?", cs.AcceptedLawyerID).Error
+
+			return c.JSON(caseWithParties{
+				Case:           cs,
+				AcceptedLawyer: &lw, // bisa nil kalau lookup gagal, itu oke
+			})
+		}
+
+		// Belum engaged: jangan bocorkan identitas siapa pun
+		return c.JSON(cs)
+
 	case string(models.RoleLawyer):
-		// hanya lawyer yang diterima saat status engaged
+		// hanya lawyer yang diterima saat status engaged yang boleh akses
 		if cs.Status != models.CaseEngaged || cs.AcceptedLawyerID.String() != userID {
 			return fiber.ErrForbidden
 		}
-		// Batasi quotes yang dikirim ke FE: hanya quote yang diterima (miliknya sendiri)
+
+		// Kirim hanya quote yang diterima (punya dia) agar tidak bocorkan kompetitor
 		if cs.AcceptedQuoteID != uuid.Nil {
 			var q models.Quote
 			if err := h.db.First(&q, "id = ?", cs.AcceptedQuoteID).Error; err == nil {
@@ -233,19 +284,21 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		} else {
 			cs.Quotes = []models.Quote{}
 		}
+
+		// Sertakan identitas client ke lawyer yang sudah engaged
+		var cl publicClient
+		_ = h.db.Model(&models.User{}).
+			Select("id, name, email").
+			First(&cl, "id = ?", cs.ClientID).Error
+
+		return c.JSON(caseWithParties{
+			Case:   cs,
+			Client: &cl, // bisa nil jika lookup gagal
+		})
+
 	default:
 		return fiber.ErrForbidden
 	}
-
-	// Normalisasi slice agar tidak null
-	if cs.Files == nil {
-		cs.Files = []models.CaseFile{}
-	}
-	if cs.Quotes == nil {
-		cs.Quotes = []models.Quote{}
-	}
-
-	return c.JSON(cs)
 }
 
 // ====== Marketplace (anonymized) ======
