@@ -263,7 +263,6 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Normalisasi
 	if cs.Files == nil {
 		cs.Files = []models.CaseFile{}
 	}
@@ -277,21 +276,25 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 			return fiber.ErrForbidden
 		}
 
-		// Build response
+		// ⬇️ SENSOR PII di note saat case masih OPEN (belum deal)
+		if cs.Status == models.CaseOpen {
+			for i := range cs.Quotes {
+				cs.Quotes[i].Note = sanitize.RedactPII(cs.Quotes[i].Note)
+			}
+		}
+
 		resp := CaseDetailResponse{Case: cs}
-		// Saat sudah deal (engaged atau closed), munculkan AcceptedLawyer
 		if (cs.Status == models.CaseEngaged || cs.Status == models.CaseClosed) && cs.AcceptedLawyerID != uuid.Nil {
 			resp.AcceptedLawyer = h.fetchPublicUser(cs.AcceptedLawyerID, true)
 		}
 		return c.JSON(resp)
 
 	case string(models.RoleLawyer):
-		// Lawyer hanya boleh akses jika dia adalah accepted lawyer
+		// Lawyer hanya accepted di engaged/closed
 		if (cs.Status != models.CaseEngaged && cs.Status != models.CaseClosed) || cs.AcceptedLawyerID.String() != userID {
 			return fiber.ErrForbidden
 		}
-
-		// Kirim hanya quote yang diterima agar tidak bocorkan kompetitor
+		// Kirim hanya accepted quote
 		if cs.AcceptedQuoteID != uuid.Nil {
 			var q models.Quote
 			if err := h.db.First(&q, "id = ?", cs.AcceptedQuoteID).Error; err == nil {
@@ -302,7 +305,6 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		} else {
 			cs.Quotes = []models.Quote{}
 		}
-
 		resp := CaseDetailResponse{
 			Case:   cs,
 			Client: h.fetchPublicUser(cs.ClientID, false),
