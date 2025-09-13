@@ -132,11 +132,11 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	}
 
 	// Data + quotes count
-	var rows []caseWithCounts
+	rows := make([]caseWithCounts, 0, size)
 	if err := h.db.
 		Table("cases").
 		Select(`cases.id, cases.title, cases.category, cases.status, cases.created_at,
-                COUNT(quotes.id) AS quotes`).
+          COUNT(quotes.id) AS quotes`).
 		Joins("LEFT JOIN quotes ON quotes.case_id = cases.id").
 		Where("cases.client_id = ?", clientID).
 		Group("cases.id").
@@ -146,10 +146,14 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
+	if rows == nil {
+		rows = []caseWithCounts{}
+	}
+
 	return c.JSON(fiber.Map{
 		"page": page, "pageSize": size, "total": total,
 		"pages": int(math.Ceil(float64(total) / float64(size))),
-		"items": rows,
+		"items": rows, // sekarang pasti [] saat kosong
 	})
 }
 
@@ -169,13 +173,27 @@ func (h *Handler) GetDetailOwner(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	var cs models.Case
-	if err := h.db.Where("id = ? AND client_id = ?", id, clientID).
-		Preload("Files").Preload("Quotes").First(&cs).Error; err != nil {
+	err := h.db.
+		Where("id = ? AND client_id = ?", id, clientID).
+		// opsional: kasih order biar stabil
+		Preload("Files", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("Quotes", func(db *gorm.DB) *gorm.DB { return db.Order("created_at DESC") }).
+		First(&cs).Error
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return fiber.ErrNotFound
 		}
 		return fiber.ErrInternalServerError
 	}
+
+	// Normalisasi: jangan pernah kirim null ke FE
+	if cs.Files == nil {
+		cs.Files = []models.CaseFile{}
+	}
+	if cs.Quotes == nil {
+		cs.Quotes = []models.Quote{}
+	}
+
 	return c.JSON(cs)
 }
 
