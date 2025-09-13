@@ -21,19 +21,23 @@ import (
 
 type UpsertQuoteRequest struct {
 	CaseID      string `json:"case_id" validate:"required,uuid4"`
-	AmountCents int    `json:"amount_cents" validate:"required,gte=100"` // min $1.00 if cents
+	AmountCents int    `json:"amount_cents" validate:"required,gte=100"`
 	Days        int    `json:"days" validate:"required,gte=1,lte=90"`
 	Note        string `json:"note" validate:"max=1000"`
 }
 
+// Tambah metadata kasus agar FE bisa tampilkan nama dengan benar
 type MyQuoteItem struct {
-	ID          string `json:"id"`
-	CaseID      string `json:"case_id"`
-	AmountCents int    `json:"amount_cents"`
-	Days        int    `json:"days"`
-	Note        string `json:"note"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
+	ID           string `json:"id"`
+	CaseID       string `json:"case_id"`
+	CaseTitle    string `json:"case_title"`    // <—
+	CaseCategory string `json:"case_category"` // optional
+	CaseStatus   string `json:"case_status"`   // optional
+	AmountCents  int    `json:"amount_cents"`
+	Days         int    `json:"days"`
+	Note         string `json:"note"`
+	Status       string `json:"status"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type PageMyQuotes struct {
@@ -188,7 +192,7 @@ type myQuoteItem struct {
 
 // List My Quotes godoc
 // @Summary      List my quotes
-// @Description  Lawyer lists their quotes (filter by status, with pagination)
+// @Description  Lawyer lists their quotes (filter by status, with pagination). Includes case title.
 // @Tags         quotes
 // @Security     BearerAuth
 // @Produce      json
@@ -205,33 +209,58 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	page, size := parsePage(c)
 	status := strings.TrimSpace(c.Query("status"))
 
-	q := h.db.Model(&models.Quote{}).Where("lawyer_id = ?", lawyerID)
+	base := h.db.Table("quotes").
+		Where("quotes.lawyer_id = ?", lawyerID)
+
 	if status != "" {
 		switch status {
 		case string(models.QuoteProposed), string(models.QuoteAccepted), string(models.QuoteRejected):
-			q = q.Where("status = ?", status)
+			base = base.Where("quotes.status = ?", status)
 		default:
 			return fiber.NewError(fiber.StatusBadRequest, "invalid status filter")
 		}
 	}
 
+	// Hitung total dulu (tanpa join agar murah)
 	var total int64
-	if err := q.Count(&total).Error; err != nil {
+	if err := base.Count(&total).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
 
-	// --- inisialisasi slice agar tidak null ---
-	rows := make([]myQuoteItem, 0)
-	if err := q.Order("created_at DESC").
-		Offset((page - 1) * size).Limit(size).
+	// Ambil data + join cases untuk title/category/status
+	rows := make([]MyQuoteItem, 0, size)
+	if err := base.
+		Select(`
+            quotes.id,
+            quotes.case_id,
+            quotes.amount_cents,
+            quotes.days,
+            quotes.note,
+            quotes.status,
+            quotes.created_at,
+            cases.title      AS case_title,
+            cases.category   AS case_category,
+            cases.status     AS case_status
+        `).
+		Joins("JOIN cases ON cases.id = quotes.case_id").
+		Order("quotes.created_at DESC").
+		Offset((page - 1) * size).
+		Limit(size).
 		Scan(&rows).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
 
+	// Normalisasi agar tidak null
+	if rows == nil {
+		rows = []MyQuoteItem{}
+	}
+
 	return c.JSON(fiber.Map{
-		"page": page, "pageSize": size, "total": total,
-		"pages": int(math.Ceil(float64(total) / float64(size))),
-		"items": rows, // akan [] saat kosong, bukan null
+		"page":     page,
+		"pageSize": size,
+		"total":    total,
+		"pages":    int(math.Ceil(float64(total) / float64(size))),
+		"items":    rows,
 	})
 }
 
