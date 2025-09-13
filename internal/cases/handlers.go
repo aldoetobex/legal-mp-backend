@@ -157,35 +157,64 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	})
 }
 
-// Get case detail for owner
-// @Summary      Case detail (owner)
-// @Description  Client gets their case detail (with files & quotes)
+// GetDetail godoc
+// @Summary      Case detail (owner or accepted lawyer)
+// @Description  Client owner atau lawyer yang diterima (engaged) dapat melihat detail & files
 // @Tags         cases
 // @Security     BearerAuth
 // @Produce      json
 // @Param        id   path string true "case id (uuid)"
 // @Success      200  {object}  models.Case
 // @Failure      401  {object}  models.ErrorResponse
+// @Failure      403  {object}  models.ErrorResponse
 // @Failure      404  {object}  models.ErrorResponse
 // @Router       /cases/{id} [get]
-func (h *Handler) GetDetailOwner(c *fiber.Ctx) error {
-	clientID := auth.MustUserID(c)
+func (h *Handler) GetDetail(c *fiber.Ctx) error {
 	id := c.Params("id")
+	userID := auth.MustUserID(c)
+	role, _ := c.Locals("role").(string) // di-set oleh middleware auth
 
+	// Ambil case + relasi
 	var cs models.Case
-	err := h.db.
-		Where("id = ? AND client_id = ?", id, clientID).
+	if err := h.db.
 		Preload("Files", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
 		Preload("Quotes", func(db *gorm.DB) *gorm.DB { return db.Order("created_at DESC") }).
-		First(&cs).Error
-	if err != nil {
+		First(&cs, "id = ?", id).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return fiber.ErrNotFound
 		}
 		return fiber.ErrInternalServerError
 	}
 
-	// Normalisasi: jangan kirim null
+	// Authorization:
+	switch role {
+	case string(models.RoleClient):
+		// hanya owner
+		if cs.ClientID.String() != userID {
+			return fiber.ErrForbidden
+		}
+	case string(models.RoleLawyer):
+		// hanya lawyer yang diterima saat status engaged
+		if cs.Status != models.CaseEngaged || cs.AcceptedLawyerID.String() != userID {
+			return fiber.ErrForbidden
+		}
+		// Opsional: batasi quotes yang dikirim ke FE agar tidak membocorkan kompetitor
+		// kirim hanya quote yang diterima (miliknya sendiri)
+		if cs.AcceptedQuoteID != uuid.Nil {
+			var q models.Quote
+			if err := h.db.First(&q, "id = ?", cs.AcceptedQuoteID).Error; err == nil {
+				cs.Quotes = []models.Quote{q}
+			} else {
+				cs.Quotes = []models.Quote{}
+			}
+		} else {
+			cs.Quotes = []models.Quote{}
+		}
+	default:
+		return fiber.ErrForbidden
+	}
+
+	// Normalisasi slice agar tidak null
 	if cs.Files == nil {
 		cs.Files = []models.CaseFile{}
 	}

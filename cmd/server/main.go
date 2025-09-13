@@ -87,7 +87,7 @@ func main() {
 	// Client
 	api.Post("/cases", auth.RequireAuth(), auth.RequireRole("client"), caseH.Create)
 	api.Get("/cases/mine", auth.RequireAuth(), auth.RequireRole("client"), caseH.ListMine)
-	api.Get("/cases/:id", auth.RequireAuth(), auth.RequireRole("client"), caseH.GetDetailOwner)
+	api.Get("/cases/:id", auth.RequireAuth(), auth.RequireRole("client"), caseH.GetDetail)
 	api.Post("/cases/:id/files", auth.RequireAuth(), auth.RequireRole("client"), caseH.UploadFile)
 	// Lawyer
 	api.Get("/marketplace", auth.RequireAuth(), auth.RequireRole("lawyer"), caseH.Marketplace)
