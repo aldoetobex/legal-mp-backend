@@ -34,9 +34,13 @@ type Handler struct{ db *gorm.DB }
 
 func NewHandler(db *gorm.DB) *Handler { return &Handler{db: db} }
 
+// =======================================
+// Create Checkout (MOCK)
+// =======================================
+
 // Create Checkout (Mock) godoc
 // @Summary      Create checkout (mock)
-// @Description  Client selects a quote → create a payment with status 'initiated' using mock provider
+// @Description  Client selects a quote → create or reuse an initiated payment (mock provider)
 // @Tags         payments
 // @Security     BearerAuth
 // @Produce      json
@@ -59,7 +63,7 @@ func (h *Handler) CreateCheckoutMock(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid quote id")
 	}
 
-	// Load quote and case
+	// Load quote & case
 	var q models.Quote
 	if err := h.db.First(&q, "id = ?", qid).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -72,7 +76,7 @@ func (h *Handler) CreateCheckoutMock(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Ensure requester is the case owner and case is open
+	// AuthZ & business constraints
 	clientID := auth.MustUserID(c)
 	if cs.ClientID.String() != clientID {
 		return fiber.ErrForbidden
@@ -81,36 +85,46 @@ func (h *Handler) CreateCheckoutMock(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "case is not open")
 	}
 
-	// Create initiated payment (idempotent by quote)
-	p := models.Payment{
-		CaseID:      cs.ID,
-		QuoteID:     q.ID,
-		ClientID:    cs.ClientID,
-		AmountCents: q.AmountCents,
-		Status:      models.PayInitiated,
-		CreatedAt:   time.Now(),
-	}
-	if err := h.db.Create(&p).Error; err != nil {
-		// If already exists for this quote, reuse it (idempotent)
-		var existing models.Payment
-		if e := h.db.First(&existing, "quote_id = ?", q.ID).Error; e == nil {
-			p = existing
-		} else {
+	// Idempotent by quote: reuse existing payment row if present
+	var pay models.Payment
+	if err := h.db.Where("quote_id = ?", q.ID).First(&pay).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return fiber.ErrInternalServerError
+		}
+		// create new initiated payment
+		pay = models.Payment{
+			CaseID:      cs.ID,
+			QuoteID:     q.ID,
+			ClientID:    cs.ClientID,
+			AmountCents: q.AmountCents,
+			Status:      models.PayInitiated,
+			CreatedAt:   time.Now(),
+		}
+		if err := h.db.Create(&pay).Error; err != nil {
+			return fiber.ErrInternalServerError
+		}
+	} else {
+		// already exist
+		if pay.Status == models.PayPaid {
+			return fiber.NewError(fiber.StatusConflict, "quote already paid")
 		}
 	}
 
 	resp := CheckoutResponse{
-		PaymentID:   p.ID.String(),
-		RedirectURL: "http://localhost:3000/mock/checkout?pid=" + p.ID.String(),
+		PaymentID:   pay.ID.String(),
+		RedirectURL: "http://localhost:3000/mock/checkout?pid=" + pay.ID.String(),
 		Provider:    "mock",
 	}
 	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
+// =======================================
+// Create Checkout (STRIPE)
+// =======================================
+
 // Create Checkout (Stripe) godoc
 // @Summary      Create checkout (Stripe)
-// @Description  Client selects a quote → create a Stripe Checkout Session (server-side)
+// @Description  Client selects a quote → create a Stripe Checkout Session (server-side) using amount from DB
 // @Tags         payments
 // @Security     BearerAuth
 // @Produce      json
@@ -124,7 +138,7 @@ func (h *Handler) CreateCheckoutMock(c *fiber.Ctx) error {
 // @Failure      500  {object}  models.ErrorResponse
 // @Router       /checkout/{quoteID} [post]
 func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
-	// Fallback to mock provider if configured
+	// Use mock provider if configured
 	if os.Getenv("PAYMENT_PROVIDER") == "mock" {
 		return h.CreateCheckoutMock(c)
 	}
@@ -154,7 +168,7 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// AuthZ & business constraints
+	// AuthZ & state checks
 	if cs.ClientID.String() != clientID {
 		return fiber.ErrForbidden
 	}
@@ -162,29 +176,35 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "case is not open")
 	}
 
-	// Create initiated payment (idempotent by quote)
-	pay := models.Payment{
-		CaseID:      cs.ID,
-		QuoteID:     q.ID,
-		ClientID:    cs.ClientID,
-		AmountCents: q.AmountCents,
-		Status:      models.PayInitiated,
-		CreatedAt:   time.Now(),
-	}
-	if err := h.db.Create(&pay).Error; err != nil {
-		var existing models.Payment
-		if e := h.db.First(&existing, "quote_id = ?", q.ID).Error; e == nil {
-			pay = existing
-		} else {
+	// Idempotent by quote: reuse existing payment if any; if paid → 409
+	var pay models.Payment
+	if err := h.db.Where("quote_id = ?", q.ID).First(&pay).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return fiber.ErrInternalServerError
+		}
+		// create initiated payment
+		pay = models.Payment{
+			CaseID:      cs.ID,
+			QuoteID:     q.ID,
+			ClientID:    cs.ClientID,
+			AmountCents: q.AmountCents,
+			Status:      models.PayInitiated,
+			CreatedAt:   time.Now(),
+		}
+		if err := h.db.Create(&pay).Error; err != nil {
+			return fiber.ErrInternalServerError
+		}
+	} else {
+		if pay.Status == models.PayPaid {
+			return fiber.NewError(fiber.StatusConflict, "quote already paid")
 		}
 	}
 
-	// Build success/cancel URLs (served by your frontend)
+	// Build success/cancel URLs shown to user after checkout
 	successURL := os.Getenv("PUBLIC_BASE_URL") + "/payments/success?pid=" + pay.ID.String()
 	cancelURL := os.Getenv("PUBLIC_BASE_URL") + "/payments/cancel?pid=" + pay.ID.String()
 
-	// Create Stripe checkout session; amount comes from DB, not from client
+	// Create Stripe checkout session; amount & metadata from DB (never from client)
 	params := &stripe.CheckoutSessionParams{
 		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
 		SuccessURL:        stripe.String(successURL),
@@ -193,7 +213,7 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 		Metadata: map[string]string{
 			"payment_id":   pay.ID.String(),
 			"quote_id":     q.ID.String(),
-			"case_id":      cs.ID.String(), // ini tetap disimpan
+			"case_id":      cs.ID.String(),
 			"client_id":    cs.ClientID.String(),
 			"amount_cents": fmt.Sprintf("%d", q.AmountCents),
 		},
@@ -202,8 +222,8 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
 					Currency: stripe.String(currency),
 					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
-						Name:        stripe.String(fmt.Sprintf("Legal case #%s", cs.ID.String())), // tampilkan case id
-						Description: stripe.String(fmt.Sprintf("Case engagement (%s)", q.Note)),   // misalnya "Best price"
+						Name:        stripe.String(fmt.Sprintf("Legal case #%s", cs.ID.String())),
+						Description: stripe.String(fmt.Sprintf("Case engagement (%s)", q.Note)),
 					},
 					UnitAmount: stripe.Int64(int64(q.AmountCents)),
 				},
@@ -217,7 +237,7 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 		return fiber.NewError(http.StatusBadGateway, err.Error())
 	}
 
-	// Persist Stripe identifiers (idempotent-safe)
+	// Save latest Stripe session id (idempotent-safe)
 	if err := h.db.Model(&models.Payment{}).
 		Where("id = ?", pay.ID).
 		Updates(map[string]any{
@@ -233,6 +253,10 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 	}
 	return c.Status(fiber.StatusCreated).JSON(resp)
 }
+
+// =======================================
+// Mock Complete (dev only)
+// =======================================
 
 // Mock Complete godoc
 // @Summary      Complete payment (mock)
@@ -262,13 +286,12 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 	}
 	pid, err := uuid.Parse(in.PaymentID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid payment id")
+		return fiber.NewError(http.StatusBadRequest, "invalid payment id")
 	}
 
-	// Atomic transaction: single winner
 	tx := h.db.Begin()
 
-	// 1) Load payment (FOR UPDATE)
+	// 1) Lock payment
 	var pay models.Payment
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		First(&pay, "id = ?", pid).Error; err != nil {
@@ -278,7 +301,6 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 		}
 		return fiber.ErrInternalServerError
 	}
-	// Idempotent
 	if pay.Status == models.PayPaid {
 		tx.Rollback()
 		return c.JSON(fiber.Map{"ok": true, "message": "already paid (idempotent)"})
@@ -297,28 +319,25 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// 3) Integrity: amount must match
+	// 3) Integrity
 	if pay.AmountCents != q.AmountCents {
 		tx.Rollback()
 		return fiber.NewError(http.StatusConflict, "amount mismatch")
 	}
 
-	// 4) Set winner & reject others (if case still open)
+	// 4) Accept winner & engage if still open
 	if cs.Status == models.CaseOpen {
-		// winner
 		if err := tx.Model(&models.Quote{}).Where("id = ?", q.ID).
 			Update("status", models.QuoteAccepted).Error; err != nil {
 			tx.Rollback()
 			return fiber.ErrInternalServerError
 		}
-		// others
 		if err := tx.Model(&models.Quote{}).
 			Where("case_id = ? AND id <> ? AND status = ?", cs.ID, q.ID, models.QuoteProposed).
 			Update("status", models.QuoteRejected).Error; err != nil {
 			tx.Rollback()
 			return fiber.ErrInternalServerError
 		}
-		// case engaged
 		now := time.Now()
 		if err := tx.Model(&models.Case{}).Where("id = ?", cs.ID).
 			Updates(map[string]any{
@@ -332,7 +351,7 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 		}
 	}
 
-	// 5) Mark payment paid (idempotent-safe)
+	// 5) Mark paid
 	if err := tx.Model(&models.Payment{}).Where("id = ?", pay.ID).
 		Updates(map[string]any{
 			"status": models.PayPaid,
@@ -346,6 +365,10 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"ok": true})
 }
+
+// =======================================
+// Stripe Webhook
+// =======================================
 
 // Stripe Webhook godoc
 // @Summary      Stripe webhook endpoint
@@ -375,6 +398,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 		if err := json.Unmarshal(evt.Data.Raw, &s); err != nil {
 			return fiber.ErrBadRequest
 		}
+
 		// payment_id from metadata or client_reference_id
 		pidStr := ""
 		if s.Metadata != nil && s.Metadata["payment_id"] != "" {
@@ -390,7 +414,6 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.NewError(http.StatusBadRequest, "invalid payment_id")
 		}
 
-		// Atomic transaction → single winner
 		tx := h.db.Begin()
 
 		var pay models.Payment
@@ -402,7 +425,8 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			}
 			return fiber.ErrInternalServerError
 		}
-		// Idempotent
+
+		// Idempotent: if already paid, acknowledge 200
 		if pay.Status == models.PayPaid {
 			tx.Rollback()
 			return c.SendStatus(http.StatusOK)
@@ -426,7 +450,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.NewError(http.StatusConflict, "amount mismatch")
 		}
 
-		// Set winner & engage the case if still open
+		// Engage winner if still open
 		if cs.Status == models.CaseOpen {
 			if err := tx.Model(&models.Quote{}).Where("id = ?", q.ID).
 				Update("status", models.QuoteAccepted).Error; err != nil {
@@ -452,10 +476,15 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			}
 		}
 
+		intentID := ""
+		if s.PaymentIntent != nil {
+			intentID = s.PaymentIntent.ID
+		}
+
 		if err := tx.Model(&models.Payment{}).Where("id = ?", pay.ID).
 			Updates(map[string]any{
 				"status":                models.PayPaid,
-				"stripe_payment_intent": s.PaymentIntent.ID,
+				"stripe_payment_intent": intentID,
 			}).Error; err != nil {
 			tx.Rollback()
 			return fiber.ErrInternalServerError
@@ -467,7 +496,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 
 	default:
-		// ignore other events
+		// Ignore other events
 		return c.SendStatus(http.StatusOK)
 	}
 }
