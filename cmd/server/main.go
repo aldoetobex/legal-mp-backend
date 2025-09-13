@@ -16,6 +16,7 @@ import (
 	"os"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/joho/godotenv"
 
 	"github.com/aldoetobex/legal-mp-backend/pkg/database"
@@ -43,6 +44,27 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: auth.ErrorHandler, // or your middleware package
+	})
+
+	// FRONTEND_ORIGIN contoh:
+	// http://localhost:3000,https://your-frontend.vercel.app
+	allowed := os.Getenv("FRONTEND_ORIGIN")
+	if allowed == "" {
+		// dev fallback
+		allowed = "http://localhost:3000,https://legal-mp-frontend.vercel.app"
+	}
+
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     allowed, // pisahkan dengan koma jika lebih dari satu
+		AllowMethods:     "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+		AllowHeaders:     "Authorization,Content-Type",
+		AllowCredentials: true,
+		MaxAge:           600,
+	}))
+
+	// (opsional) kalau ada edge/proxy yang cerewet, balas semua OPTIONS no content
+	app.Options("/*", func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNoContent)
 	})
 
 	app.Get("/health", func(c *fiber.Ctx) error { return c.JSON(fiber.Map{"status": "ok"}) })
