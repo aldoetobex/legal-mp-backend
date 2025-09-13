@@ -193,7 +193,7 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 		Metadata: map[string]string{
 			"payment_id":   pay.ID.String(),
 			"quote_id":     q.ID.String(),
-			"case_id":      cs.ID.String(),
+			"case_id":      cs.ID.String(), // ini tetap disimpan
 			"client_id":    cs.ClientID.String(),
 			"amount_cents": fmt.Sprintf("%d", q.AmountCents),
 		},
@@ -202,8 +202,8 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
 					Currency: stripe.String(currency),
 					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
-						Name:        stripe.String("Legal case engagement"),
-						Description: stripe.String(q.Note),
+						Name:        stripe.String(fmt.Sprintf("Legal case #%s", cs.ID.String())), // tampilkan case id
+						Description: stripe.String(fmt.Sprintf("Case engagement (%s)", q.Note)),   // misalnya "Best price"
 					},
 					UnitAmount: stripe.Int64(int64(q.AmountCents)),
 				},
