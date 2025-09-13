@@ -90,11 +90,14 @@ func main() {
 	api.Get("/cases/:id", auth.RequireAuth(), caseH.GetDetail)
 	api.Post("/cases/:id/files", auth.RequireAuth(), auth.RequireRole("client"), caseH.UploadFile)
 
+	api.Get("/cases/:id/history", auth.RequireAuth(), caseH.ListHistory)
+
 	api.Post("/cases/:id/cancel", auth.RequireAuth(), auth.RequireRole("client"), caseH.Cancel)
 	api.Post("/cases/:id/close", auth.RequireAuth(), auth.RequireRole("client"), caseH.Close)
 	// Lawyer
 	api.Get("/marketplace", auth.RequireAuth(), auth.RequireRole("lawyer"), caseH.Marketplace)
 	api.Get("/files/:fileID/signed-url", auth.RequireAuth(), caseH.SignedDownloadURL)
+	api.Delete("/files/:fileID", auth.RequireAuth(), auth.RequireRole("client"), caseH.DeleteFile)
 
 	// Quotes
 	quoteH := quotes.NewHandler(db)

@@ -21,7 +21,7 @@ import (
 // ===== DTOs =====
 
 type CreateCaseRequest struct {
-	Title       string `json:"title" validate:"required,max=120"`
+	Title       string `json:"title" validate:"required,min=3,max=120"`
 	Category    string `json:"category" validate:"required,max=40"`
 	Description string `json:"description" validate:"max=2000"`
 }
@@ -47,26 +47,15 @@ type PageCases struct {
 	Items    []CaseListItem `json:"items"`
 }
 
-// Profil publik yang aman dikirim ke FE
-type publicLawyer struct {
-	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"`
-	Email        string    `json:"email"`
-	Jurisdiction string    `json:"jurisdiction,omitempty"`
-	BarNumber    string    `json:"bar_number,omitempty"`
-}
-
-type publicClient struct {
-	ID    uuid.UUID `json:"id"`
-	Name  string    `json:"name"`
-	Email string    `json:"email"`
-}
-
-// Bungkus response agar bisa tambah field counterpart
-type caseWithParties struct {
-	models.Case
-	AcceptedLawyer *publicLawyer `json:"accepted_lawyer,omitempty"`
-	Client         *publicClient `json:"client,omitempty"`
+// ====== History DTO ======
+type CaseHistoryDTO struct {
+	ID        uuid.UUID         `json:"id"`
+	Action    string            `json:"action"`
+	OldStatus models.CaseStatus `json:"old_status"`
+	NewStatus models.CaseStatus `json:"new_status"`
+	Reason    string            `json:"reason"`
+	ActorID   uuid.UUID         `json:"actor_id"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 type Handler struct {
@@ -203,17 +192,57 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	})
 }
 
+// ====== DTO untuk counterpart & detail ======
+type PublicUser struct {
+	ID           uuid.UUID `json:"id"`
+	Name         string    `json:"name,omitempty"`
+	Email        string    `json:"email,omitempty"`
+	Jurisdiction string    `json:"jurisdiction,omitempty"`
+	BarNumber    string    `json:"bar_number,omitempty"`
+}
+
+type CaseDetailResponse struct {
+	models.Case
+	AcceptedLawyer *PublicUser `json:"accepted_lawyer,omitempty"`
+	Client         *PublicUser `json:"client,omitempty"`
+}
+
+// ambil profil publik user
+func (h *Handler) fetchPublicUser(uID uuid.UUID, withLawyerFields bool) *PublicUser {
+	if uID == uuid.Nil {
+		return nil
+	}
+	var row struct {
+		ID           uuid.UUID
+		Name         string
+		Email        string
+		Jurisdiction string
+		BarNumber    string
+	}
+	q := h.db.Model(&models.User{}).Select("id, name, email")
+	if withLawyerFields {
+		q = q.Select("id, name, email, jurisdiction, bar_number")
+	}
+	if err := q.First(&row, "id = ?", uID).Error; err != nil {
+		return nil
+	}
+	return &PublicUser{
+		ID:           row.ID,
+		Name:         row.Name,
+		Email:        row.Email,
+		Jurisdiction: row.Jurisdiction,
+		BarNumber:    row.BarNumber,
+	}
+}
+
 // GetDetail godoc
 // @Summary      Case detail (owner or accepted lawyer)
-// @Description  Client owner atau lawyer yang diterima (engaged) dapat melihat detail & files.
-//
-//	Jika status engaged: client melihat accepted_lawyer, lawyer melihat client.
-//
+// @Description  Client owner atau lawyer yang diterima (engaged/closed) dapat melihat detail & files + counterpart
 // @Tags         cases
 // @Security     BearerAuth
 // @Produce      json
 // @Param        id   path string true "case id (uuid)"
-// @Success      200  {object}  models.Case
+// @Success      200  {object}  CaseDetailResponse
 // @Failure      401  {object}  models.ErrorResponse
 // @Failure      403  {object}  models.ErrorResponse
 // @Failure      404  {object}  models.ErrorResponse
@@ -221,9 +250,8 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 func (h *Handler) GetDetail(c *fiber.Ctx) error {
 	id := c.Params("id")
 	userID := auth.MustUserID(c)
-	role, _ := c.Locals("role").(string) // di-set oleh middleware auth
+	role, _ := c.Locals("role").(string)
 
-	// Ambil case + relasi
 	var cs models.Case
 	if err := h.db.
 		Preload("Files", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
@@ -235,7 +263,7 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Pastikan slices tidak null (normalisasi awal)
+	// Normalisasi
 	if cs.Files == nil {
 		cs.Files = []models.CaseFile{}
 	}
@@ -243,37 +271,27 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		cs.Quotes = []models.Quote{}
 	}
 
-	// Authorization + tailor response
 	switch role {
 	case string(models.RoleClient):
-		// hanya owner
 		if cs.ClientID.String() != userID {
 			return fiber.ErrForbidden
 		}
 
-		// Jika engaged dan ada AcceptedLawyerID, kirim identitas lawyer
-		if cs.Status == models.CaseEngaged && cs.AcceptedLawyerID != uuid.Nil {
-			var lw publicLawyer
-			_ = h.db.Model(&models.User{}).
-				Select("id, name, email, jurisdiction, bar_number").
-				First(&lw, "id = ?", cs.AcceptedLawyerID).Error
-
-			return c.JSON(caseWithParties{
-				Case:           cs,
-				AcceptedLawyer: &lw, // bisa nil kalau lookup gagal, itu oke
-			})
+		// Build response
+		resp := CaseDetailResponse{Case: cs}
+		// Saat sudah deal (engaged atau closed), munculkan AcceptedLawyer
+		if (cs.Status == models.CaseEngaged || cs.Status == models.CaseClosed) && cs.AcceptedLawyerID != uuid.Nil {
+			resp.AcceptedLawyer = h.fetchPublicUser(cs.AcceptedLawyerID, true)
 		}
-
-		// Belum engaged: jangan bocorkan identitas siapa pun
-		return c.JSON(cs)
+		return c.JSON(resp)
 
 	case string(models.RoleLawyer):
-		// hanya lawyer yang diterima saat status engaged yang boleh akses
-		if cs.Status != models.CaseEngaged || cs.AcceptedLawyerID.String() != userID {
+		// Lawyer hanya boleh akses jika dia adalah accepted lawyer
+		if (cs.Status != models.CaseEngaged && cs.Status != models.CaseClosed) || cs.AcceptedLawyerID.String() != userID {
 			return fiber.ErrForbidden
 		}
 
-		// Kirim hanya quote yang diterima (punya dia) agar tidak bocorkan kompetitor
+		// Kirim hanya quote yang diterima agar tidak bocorkan kompetitor
 		if cs.AcceptedQuoteID != uuid.Nil {
 			var q models.Quote
 			if err := h.db.First(&q, "id = ?", cs.AcceptedQuoteID).Error; err == nil {
@@ -285,16 +303,11 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 			cs.Quotes = []models.Quote{}
 		}
 
-		// Sertakan identitas client ke lawyer yang sudah engaged
-		var cl publicClient
-		_ = h.db.Model(&models.User{}).
-			Select("id, name, email").
-			First(&cl, "id = ?", cs.ClientID).Error
-
-		return c.JSON(caseWithParties{
+		resp := CaseDetailResponse{
 			Case:   cs,
-			Client: &cl, // bisa nil jika lookup gagal
-		})
+			Client: h.fetchPublicUser(cs.ClientID, false),
+		}
+		return c.JSON(resp)
 
 	default:
 		return fiber.ErrForbidden
@@ -530,4 +543,67 @@ func LogCaseHistory(ctx context.Context, db *gorm.DB, caseID, actorID uuid.UUID,
 		Reason:    reason,
 		CreatedAt: time.Now(),
 	}).Error
+}
+
+// List Case History godoc
+// @Summary      Case history
+// @Description  Riwayat perubahan case (owner & accepted lawyer)
+// @Tags         cases
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id   path string true "case id (uuid)"
+// @Success      200  {array}  CaseHistoryDTO
+// @Failure      401  {object} models.ErrorResponse
+// @Failure      403  {object} models.ErrorResponse
+// @Failure      404  {object} models.ErrorResponse
+// @Router       /cases/{id}/history [get]
+func (h *Handler) ListHistory(c *fiber.Ctx) error {
+	id := c.Params("id")
+	userID := auth.MustUserID(c)
+	role, _ := c.Locals("role").(string)
+
+	var cs models.Case
+	if err := h.db.Select("id, client_id, status, accepted_lawyer_id").
+		First(&cs, "id = ?", id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fiber.ErrNotFound
+		}
+		return fiber.ErrInternalServerError
+	}
+
+	// Authorization
+	switch role {
+	case string(models.RoleClient):
+		if cs.ClientID.String() != userID {
+			return fiber.ErrForbidden
+		}
+	case string(models.RoleLawyer):
+		if cs.AcceptedLawyerID.String() != userID {
+			return fiber.ErrForbidden
+		}
+	default:
+		return fiber.ErrForbidden
+	}
+
+	var rows []models.CaseHistory
+	if err := h.db.
+		Where("case_id = ?", cs.ID).
+		Order("created_at ASC").
+		Find(&rows).Error; err != nil {
+		return fiber.ErrInternalServerError
+	}
+
+	out := make([]CaseHistoryDTO, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, CaseHistoryDTO{
+			ID:        r.ID,
+			Action:    r.Action,
+			OldStatus: r.OldStatus,
+			NewStatus: r.NewStatus,
+			Reason:    r.Reason,
+			ActorID:   r.ActorID,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	return c.JSON(out)
 }

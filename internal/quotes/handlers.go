@@ -21,9 +21,9 @@ import (
 
 type UpsertQuoteRequest struct {
 	CaseID      string `json:"case_id" validate:"required,uuid4"`
-	AmountCents int    `json:"amount_cents" validate:"required,gte=100"`
-	Days        int    `json:"days" validate:"required,gte=1,lte=90"`
-	Note        string `json:"note" validate:"max=1000"`
+	AmountCents int    `json:"amount_cents" validate:"required,min=1,max=100000000"` // min S$10, max S$1,000,000
+	Days        int    `json:"days" validate:"required,min=1,max=365"`
+	Note        string `json:"note" validate:"omitempty,max=500"`
 }
 
 // Tambah metadata kasus agar FE bisa tampilkan nama dengan benar
@@ -173,21 +173,6 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"id": q.ID, "status": q.Status, "amount_cents": q.AmountCents, "days": q.Days, "note": q.Note,
 	})
-}
-
-// =====================================================
-// GET /api/quotes/mine?page=&pageSize=&status= (lawyer)
-// =====================================================
-
-type myQuoteItem struct {
-	ID          uuid.UUID          `json:"id"`
-	CaseID      uuid.UUID          `json:"case_id"`
-	AmountCents int                `json:"amount_cents"`
-	Days        int                `json:"days"`
-	Note        string             `json:"note"`
-	Status      models.QuoteStatus `json:"status"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
 // List My Quotes godoc

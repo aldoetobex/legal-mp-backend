@@ -15,12 +15,13 @@ import (
 
 // DTOs untuk Swagger
 type SignupRequest struct {
-	Email        string `json:"email" validate:"required,email,max=60"`
-	Password     string `json:"password" validate:"required,min=8"`
-	Role         string `json:"role" validate:"required,oneof=client lawyer"`
-	Name         string `json:"name" validate:"max=80"`
-	Jurisdiction string `json:"jurisdiction" validate:"max=40"`
-	BarNumber    string `json:"bar_number" validate:"max=40"`
+	Role     string `json:"role" validate:"required,oneof=client lawyer"`
+	Name     string `json:"name" validate:"required,min=2,max=80"`
+	Email    string `json:"email" validate:"required,email,max=120"`
+	Password string `json:"password" validate:"required,min=6,max=72"`
+	// Opsional khusus lawyer
+	Jurisdiction string `json:"jurisdiction" validate:"omitempty,jurisdiction"`
+	BarNumber    string `json:"bar_number" validate:"omitempty,barnum"`
 }
 
 type LoginRequest struct {

@@ -21,19 +21,20 @@ definitions:
   auth.SignupRequest:
     properties:
       bar_number:
-        maxLength: 40
         type: string
       email:
-        maxLength: 60
+        maxLength: 120
         type: string
       jurisdiction:
-        maxLength: 40
+        description: Opsional khusus lawyer
         type: string
       name:
         maxLength: 80
+        minLength: 2
         type: string
       password:
-        minLength: 8
+        maxLength: 72
+        minLength: 6
         type: string
       role:
         enum:
@@ -42,6 +43,7 @@ definitions:
         type: string
     required:
     - email
+    - name
     - password
     - role
     type: object
@@ -50,6 +52,61 @@ definitions:
       comment:
         description: optional note shown in history
         maxLength: 500
+        type: string
+    type: object
+  cases.CaseDetailResponse:
+    properties:
+      accepted_lawyer:
+        $ref: '#/definitions/cases.PublicUser'
+      acceptedLawyerID:
+        description: <— tambahkan
+        type: string
+      acceptedQuoteID:
+        description: <— tambahkan
+        type: string
+      category:
+        type: string
+      client:
+        $ref: '#/definitions/cases.PublicUser'
+      clientID:
+        type: string
+      createdAt:
+        type: string
+      description:
+        type: string
+      engagedAt:
+        description: <— tambahkan
+        type: string
+      files:
+        items:
+          $ref: '#/definitions/models.CaseFile'
+        type: array
+      id:
+        type: string
+      quotes:
+        items:
+          $ref: '#/definitions/models.Quote'
+        type: array
+      status:
+        $ref: '#/definitions/models.CaseStatus'
+      title:
+        type: string
+    type: object
+  cases.CaseHistoryDTO:
+    properties:
+      action:
+        type: string
+      actor_id:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      new_status:
+        $ref: '#/definitions/models.CaseStatus'
+      old_status:
+        $ref: '#/definitions/models.CaseStatus'
+      reason:
         type: string
     type: object
   cases.CaseListItem:
@@ -77,6 +134,7 @@ definitions:
         type: string
       title:
         maxLength: 120
+        minLength: 3
         type: string
     required:
     - category
@@ -127,6 +185,19 @@ definitions:
         type: integer
       total:
         type: integer
+    type: object
+  cases.PublicUser:
+    properties:
+      bar_number:
+        type: string
+      email:
+        type: string
+      id:
+        type: string
+      jurisdiction:
+        type: string
+      name:
+        type: string
     type: object
   models.Case:
     properties:
@@ -308,16 +379,18 @@ definitions:
   quotes.UpsertQuoteRequest:
     properties:
       amount_cents:
-        minimum: 100
+        description: min S$10, max S$1,000,000
+        maximum: 100000000
+        minimum: 1
         type: integer
       case_id:
         type: string
       days:
-        maximum: 90
+        maximum: 365
         minimum: 1
         type: integer
       note:
-        maxLength: 1000
+        maxLength: 500
         type: string
     required:
     - amount_cents
@@ -369,8 +442,8 @@ paths:
       - cases
   /cases/{id}:
     get:
-      description: Client owner atau lawyer yang diterima (engaged) dapat melihat
-        detail & files
+      description: Client owner atau lawyer yang diterima (engaged/closed) dapat melihat
+        detail & files + counterpart
       parameters:
       - description: case id (uuid)
         in: path
@@ -383,7 +456,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.Case'
+            $ref: '#/definitions/cases.CaseDetailResponse'
         "401":
           description: Unauthorized
           schema:
@@ -493,7 +566,8 @@ paths:
     post:
       consumes:
       - multipart/form-data
-      description: Client (owner) uploads up to 10 files to Supabase Storage
+      description: Client (owner) uploads up to 10 files. Only allowed when case is
+        open/engaged.
       parameters:
       - description: case id (uuid)
         in: path
@@ -501,7 +575,7 @@ paths:
         required: true
         type: string
       - collectionFormat: csv
-        description: PDF/PNG (max 10)
+        description: PDF/PNG (max 10; max 10MB each)
         in: formData
         items:
           type: file
@@ -512,18 +586,20 @@ paths:
       - application/json
       responses:
         "201":
-          description: id, key, name, size
+          description: 'results: [{id,key,name,size,error?}]'
           schema:
-            items:
-              additionalProperties: true
-              type: object
-            type: array
+            additionalProperties: true
+            type: object
         "400":
           description: Bad Request
           schema:
             $ref: '#/definitions/models.ErrorResponse'
         "403":
           description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
           schema:
             $ref: '#/definitions/models.ErrorResponse'
         "500":
@@ -535,6 +611,41 @@ paths:
       summary: Upload multiple case files (PDF/PNG)
       tags:
       - files
+  /cases/{id}/history:
+    get:
+      description: Riwayat perubahan case (owner & accepted lawyer)
+      parameters:
+      - description: case id (uuid)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/cases.CaseHistoryDTO'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Case history
+      tags:
+      - cases
   /cases/{id}/quotes:
     get:
       description: Client owner sees all quotes for their case (paginated)
@@ -630,6 +741,42 @@ paths:
       summary: Create checkout (Stripe)
       tags:
       - payments
+  /files/{fileID}:
+    delete:
+      description: Only the client owner can delete files, and only while the case
+        is open/engaged.
+      parameters:
+      - description: file id (uuid)
+        in: path
+        name: fileID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 'status: ok'
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a case file
+      tags:
+      - files
   /files/{fileID}/signed-url:
     get:
       description: Client owner or the accepted lawyer obtains a short-lived signed
@@ -662,7 +809,7 @@ paths:
             $ref: '#/definitions/models.ErrorResponse'
       security:
       - BearerAuth: []
-      summary: Get signed URL
+      summary: Get signed URL for a case file
       tags:
       - files
   /login:

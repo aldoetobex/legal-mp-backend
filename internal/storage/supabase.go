@@ -98,3 +98,71 @@ func (s *Supabase) SignedURL(key string, expiresInSeconds int) (string, error) {
 	// API mengembalikan path relatif; jadikan absolute URL
 	return s.baseURL + "/storage/v1" + out.SignedURL, nil
 }
+
+// Delete: DELETE /storage/v1/object/{bucket}/{objectName}
+// Idempotent: treat 404 as success (file already gone).
+func (s *Supabase) Delete(key string) error {
+	url := fmt.Sprintf("%s/storage/v1/object/%s/%s", s.baseURL, s.bucket, key)
+
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("apikey", s.apiKey)
+	// Jika apiKey-mu adalah legacy service_role (JWT), pakai Authorization.
+	// Jika pakai Secret API Key (sb_secret_...), hapus baris di bawah.
+	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+
+	res, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	// 404 -> dianggap ok (sudah tidak ada)
+	if res.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("supabase delete error: %s | %s", res.Status, string(b))
+	}
+	return nil
+}
+
+// BulkDelete: POST /storage/v1/object/{bucket}/remove
+// Body: {"prefixes": ["case/<id>/file1.png", "case/<id>/file2.pdf", ...]}
+func (s *Supabase) BulkDelete(keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	url := fmt.Sprintf("%s/storage/v1/object/%s/remove", s.baseURL, s.bucket)
+
+	body, _ := json.Marshal(map[string][]string{
+		"prefixes": keys,
+	})
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", s.apiKey)
+	// Lihat catatan soal Authorization di atas.
+	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+
+	res, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("supabase bulk delete error: %s | %s", res.Status, string(b))
+	}
+
+	// Response biasanya berupa array hasil per prefix. Kita tidak perlu parse,
+	// karena error >300 sudah ditangani di atas.
+	return nil
+}

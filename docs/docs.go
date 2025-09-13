@@ -124,7 +124,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Client owner atau lawyer yang diterima (engaged) dapat melihat detail \u0026 files",
+                "description": "Client owner atau lawyer yang diterima (engaged/closed) dapat melihat detail \u0026 files + counterpart",
                 "produces": [
                     "application/json"
                 ],
@@ -145,7 +145,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.Case"
+                            "$ref": "#/definitions/cases.CaseDetailResponse"
                         }
                     },
                     "401": {
@@ -314,7 +314,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Client (owner) uploads up to 10 files to Supabase Storage",
+                "description": "Client (owner) uploads up to 10 files. Only allowed when case is open/engaged.",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -339,7 +339,7 @@ const docTemplate = `{
                             "type": "file"
                         },
                         "collectionFormat": "csv",
-                        "description": "PDF/PNG (max 10)",
+                        "description": "PDF/PNG (max 10; max 10MB each)",
                         "name": "files",
                         "in": "formData",
                         "required": true
@@ -347,13 +347,10 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "201": {
-                        "description": "id, key, name, size",
+                        "description": "results: [{id,key,name,size,error?}]",
                         "schema": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": true
-                            }
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "400": {
@@ -368,8 +365,69 @@ const docTemplate = `{
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
                     },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/cases/{id}/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Riwayat perubahan case (owner \u0026 accepted lawyer)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cases"
+                ],
+                "summary": "Case history",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "case id (uuid)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/cases.CaseHistoryDTO"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/models.ErrorResponse"
                         }
@@ -481,6 +539,61 @@ const docTemplate = `{
                 }
             }
         },
+        "/files/{fileID}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Only the client owner can delete files, and only while the case is open/engaged.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "files"
+                ],
+                "summary": "Delete a case file",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "file id (uuid)",
+                        "name": "fileID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "status: ok",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/files/{fileID}/signed-url": {
             "get": {
                 "security": [
@@ -495,7 +608,7 @@ const docTemplate = `{
                 "tags": [
                     "files"
                 ],
-                "summary": "Get signed URL",
+                "summary": "Get signed URL for a case file",
                 "parameters": [
                     {
                         "type": "string",
@@ -907,29 +1020,31 @@ const docTemplate = `{
             "type": "object",
             "required": [
                 "email",
+                "name",
                 "password",
                 "role"
             ],
             "properties": {
                 "bar_number": {
-                    "type": "string",
-                    "maxLength": 40
+                    "type": "string"
                 },
                 "email": {
                     "type": "string",
-                    "maxLength": 60
+                    "maxLength": 120
                 },
                 "jurisdiction": {
-                    "type": "string",
-                    "maxLength": 40
+                    "description": "Opsional khusus lawyer",
+                    "type": "string"
                 },
                 "name": {
                     "type": "string",
-                    "maxLength": 80
+                    "maxLength": 80,
+                    "minLength": 2
                 },
                 "password": {
                     "type": "string",
-                    "minLength": 8
+                    "maxLength": 72,
+                    "minLength": 6
                 },
                 "role": {
                     "type": "string",
@@ -947,6 +1062,88 @@ const docTemplate = `{
                     "description": "optional note shown in history",
                     "type": "string",
                     "maxLength": 500
+                }
+            }
+        },
+        "cases.CaseDetailResponse": {
+            "type": "object",
+            "properties": {
+                "acceptedLawyerID": {
+                    "description": "\u003c— tambahkan",
+                    "type": "string"
+                },
+                "acceptedQuoteID": {
+                    "description": "\u003c— tambahkan",
+                    "type": "string"
+                },
+                "accepted_lawyer": {
+                    "$ref": "#/definitions/cases.PublicUser"
+                },
+                "category": {
+                    "type": "string"
+                },
+                "client": {
+                    "$ref": "#/definitions/cases.PublicUser"
+                },
+                "clientID": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "engagedAt": {
+                    "description": "\u003c— tambahkan",
+                    "type": "string"
+                },
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CaseFile"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                },
+                "quotes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Quote"
+                    }
+                },
+                "status": {
+                    "$ref": "#/definitions/models.CaseStatus"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "cases.CaseHistoryDTO": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "actor_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "new_status": {
+                    "$ref": "#/definitions/models.CaseStatus"
+                },
+                "old_status": {
+                    "$ref": "#/definitions/models.CaseStatus"
+                },
+                "reason": {
+                    "type": "string"
                 }
             }
         },
@@ -990,7 +1187,8 @@ const docTemplate = `{
                 },
                 "title": {
                     "type": "string",
-                    "maxLength": 120
+                    "maxLength": 120,
+                    "minLength": 3
                 }
             }
         },
@@ -1061,6 +1259,26 @@ const docTemplate = `{
                 },
                 "total": {
                     "type": "integer"
+                }
+            }
+        },
+        "cases.PublicUser": {
+            "type": "object",
+            "properties": {
+                "bar_number": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "jurisdiction": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
                 }
             }
         },
@@ -1335,20 +1553,22 @@ const docTemplate = `{
             ],
             "properties": {
                 "amount_cents": {
+                    "description": "min S$10, max S$1,000,000",
                     "type": "integer",
-                    "minimum": 100
+                    "maximum": 100000000,
+                    "minimum": 1
                 },
                 "case_id": {
                     "type": "string"
                 },
                 "days": {
                     "type": "integer",
-                    "maximum": 90,
+                    "maximum": 365,
                     "minimum": 1
                 },
                 "note": {
                     "type": "string",
-                    "maxLength": 1000
+                    "maxLength": 500
                 }
             }
         }
