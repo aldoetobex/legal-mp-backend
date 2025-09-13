@@ -2,7 +2,6 @@ package cases
 
 import (
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/internal/auth"
 	"github.com/aldoetobex/legal-mp-backend/internal/storage"
 	"github.com/aldoetobex/legal-mp-backend/pkg/models"
+	"github.com/aldoetobex/legal-mp-backend/pkg/sanitize"
 	"github.com/aldoetobex/legal-mp-backend/pkg/validation"
 )
 
@@ -73,9 +73,9 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 		return validation.Respond(c, errs)
 	}
 
-	clientID, _ := uuid.Parse(auth.MustUserID(c))
+	clientUUID, _ := uuid.Parse(auth.MustUserID(c))
 	cs := models.Case{
-		ClientID:    clientID,
+		ClientID:    clientUUID,
 		Title:       strings.TrimSpace(in.Title),
 		Category:    strings.TrimSpace(in.Category),
 		Description: strings.TrimSpace(in.Description),
@@ -153,7 +153,7 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"page": page, "pageSize": size, "total": total,
 		"pages": int(math.Ceil(float64(total) / float64(size))),
-		"items": rows, // sekarang pasti [] saat kosong
+		"items": rows, // selalu [] saat kosong
 	})
 }
 
@@ -175,7 +175,6 @@ func (h *Handler) GetDetailOwner(c *fiber.Ctx) error {
 	var cs models.Case
 	err := h.db.
 		Where("id = ? AND client_id = ?", id, clientID).
-		// opsional: kasih order biar stabil
 		Preload("Files", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
 		Preload("Quotes", func(db *gorm.DB) *gorm.DB { return db.Order("created_at DESC") }).
 		First(&cs).Error
@@ -186,7 +185,7 @@ func (h *Handler) GetDetailOwner(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Normalisasi: jangan pernah kirim null ke FE
+	// Normalisasi: jangan kirim null
 	if cs.Files == nil {
 		cs.Files = []models.CaseFile{}
 	}
@@ -199,22 +198,22 @@ func (h *Handler) GetDetailOwner(c *fiber.Ctx) error {
 
 // ====== Marketplace (anonymized) ======
 
-var reEmail = regexp.MustCompile(`([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})`)
-var rePhone = regexp.MustCompile(`(\+?\d[\d\s\-]{6,}\d)`)
-
-type marketItem struct {
-	ID        uuid.UUID `json:"id"`
-	Title     string    `json:"title"`
-	Category  string    `json:"category"`
-	CreatedAt time.Time `json:"created_at"`
-	Preview   string    `json:"preview"`
+// DTO khusus marketplace (supaya tidak bentrok dengan PageCases milik owner)
+type MarketCaseItem struct {
+	ID         uuid.UUID `json:"id"`
+	Title      string    `json:"title"`
+	Category   string    `json:"category"`
+	CreatedAt  time.Time `json:"created_at"`
+	Preview    string    `json:"preview"`
+	HasMyQuote bool      `json:"has_my_quote"` // FE bisa dipakai untuk disable tombol submit
 }
 
-func redact(s string) string {
-	// Redact emails and phone numbers in previews
-	s = reEmail.ReplaceAllString(s, "[redacted]")
-	s = rePhone.ReplaceAllString(s, "[redacted]")
-	return s
+type PageMarketCases struct {
+	Page     int              `json:"page"`
+	PageSize int              `json:"pageSize"`
+	Total    int64            `json:"total"`
+	Pages    int              `json:"pages"`
+	Items    []MarketCaseItem `json:"items"`
 }
 
 // Marketplace godoc
@@ -227,10 +226,11 @@ func redact(s string) string {
 // @Param        pageSize      query int    false "pageSize"
 // @Param        category      query string false "category"
 // @Param        created_since query string false "YYYY-MM-DD (Asia/Singapore)"
-// @Success      200  {object}  PageCases
+// @Success      200  {object}  PageMarketCases
 // @Failure      401  {object}  models.ErrorResponse
 // @Router       /marketplace [get]
 func (h *Handler) Marketplace(c *fiber.Ctx) error {
+	lawyerID := auth.MustUserID(c) // dipakai untuk HasMyQuote
 	page, size := parsePage(c)
 	category := strings.TrimSpace(c.Query("category"))
 	createdSince := c.Query("created_since") // ISO date (YYYY-MM-DD)
@@ -238,7 +238,6 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 	var since *time.Time
 	if createdSince != "" {
 		if t, err := time.Parse("2006-01-02", createdSince); err == nil {
-			// Interpret in Asia/Singapore (UTC+8)
 			loc, _ := time.LoadLocation("Asia/Singapore")
 			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 			since = &t
@@ -260,26 +259,57 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 
 	var list []models.Case
 	if err := dbq.Order("created_at DESC").
-		Offset((page - 1) * size).Limit(size).
+		Offset((page - 1) * size).
+		Limit(size).
 		Find(&list).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
 
-	items := make([]marketItem, 0, len(list))
+	// Ambil semua case_id yang sudah pernah di-quote oleh lawyer ini,
+	// dibatasi hanya pada case yang tampil di halaman ini (IN (?)) -> efisien & mencegah N+1.
+	caseIDs := make([]uuid.UUID, 0, len(list))
 	for _, cs := range list {
-		preview := cs.Description
-		if len(preview) > 240 {
-			preview = preview[:240] + "..."
+		caseIDs = append(caseIDs, cs.ID)
+	}
+
+	quotedMap := map[uuid.UUID]bool{}
+	if len(caseIDs) > 0 {
+		var quotedIDs []uuid.UUID
+		if err := h.db.
+			Model(&models.Quote{}).
+			Where("lawyer_id = ? AND case_id IN ?", lawyerID, caseIDs).
+			Pluck("DISTINCT case_id", &quotedIDs).Error; err != nil {
+			return fiber.ErrInternalServerError
 		}
-		items = append(items, marketItem{
-			ID: cs.ID, Title: cs.Title, Category: cs.Category, CreatedAt: cs.CreatedAt,
-			Preview: redact(preview),
+		for _, qid := range quotedIDs {
+			quotedMap[qid] = true
+		}
+	}
+
+	items := make([]MarketCaseItem, 0, len(list))
+	for _, cs := range list {
+		preview := sanitize.Summary(sanitize.RedactPII(cs.Description), 240)
+
+		items = append(items, MarketCaseItem{
+			ID:         cs.ID,
+			Title:      cs.Title,
+			Category:   cs.Category,
+			CreatedAt:  cs.CreatedAt,
+			Preview:    preview,
+			HasMyQuote: quotedMap[cs.ID],
 		})
 	}
 
-	return c.JSON(fiber.Map{
-		"page": page, "pageSize": size, "total": total,
-		"pages": int(math.Ceil(float64(total) / float64(size))),
-		"items": items,
+	// Normalisasi
+	if items == nil {
+		items = []MarketCaseItem{}
+	}
+
+	return c.JSON(PageMarketCases{
+		Page:     page,
+		PageSize: size,
+		Total:    total,
+		Pages:    int(math.Ceil(float64(total) / float64(size))),
+		Items:    items,
 	})
 }

@@ -77,9 +77,7 @@ func main() {
 	authH := auth.NewHandler(db)
 	api.Post("/signup", authH.Signup)
 	api.Post("/login", authH.Login)
-	api.Get("/me", auth.RequireAuth(), func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"userID": c.Locals("userID"), "role": c.Locals("role")})
-	})
+	api.Get("/me", auth.RequireAuth(), authH.Me)
 
 	// Storage helper
 	sb := storage.NewSupabase() // uses SUPABASE_URL / SUPABASE_SECRET_KEY / SUPABASE_BUCKET

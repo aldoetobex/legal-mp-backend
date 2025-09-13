@@ -2,8 +2,10 @@ package auth
 
 import (
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
@@ -29,6 +31,16 @@ type LoginRequest struct {
 type AuthResponse struct {
 	Token string `json:"token"`
 	Role  string `json:"role"`
+}
+
+type UserProfileResponse struct {
+	ID           uuid.UUID   `json:"id"`
+	Email        string      `json:"email"`
+	Role         models.Role `json:"role"`
+	Name         string      `json:"name"`
+	Jurisdiction string      `json:"jurisdiction"`
+	BarNumber    string      `json:"bar_number"`
+	CreatedAt    time.Time   `json:"created_at"`
 }
 
 type Handler struct{ db *gorm.DB }
@@ -108,4 +120,38 @@ func (h *Handler) Login(c *fiber.Ctx) error {
 
 	token, _ := IssueToken(u.ID.String(), string(u.Role))
 	return c.JSON(AuthResponse{Token: token, Role: string(u.Role)})
+}
+
+// Me godoc
+// @Summary      Get current user profile
+// @Description  Return full profile of the authenticated user
+// @Tags         auth
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  models.User
+// @Failure      401  {object}  models.ErrorResponse
+// @Router       /me [get]
+
+func (h *Handler) Me(c *fiber.Ctx) error {
+	userID := c.Locals("userID")
+	if userID == nil {
+		return fiber.ErrUnauthorized
+	}
+
+	var u models.User
+	if err := h.db.First(&u, "id = ?", userID).Error; err != nil {
+		return fiber.ErrUnauthorized
+	}
+
+	resp := UserProfileResponse{
+		ID:           u.ID,
+		Email:        u.Email,
+		Role:         u.Role,
+		Name:         u.Name,
+		Jurisdiction: u.Jurisdiction,
+		BarNumber:    u.BarNumber,
+		CreatedAt:    u.CreatedAt,
+	}
+
+	return c.JSON(resp)
 }

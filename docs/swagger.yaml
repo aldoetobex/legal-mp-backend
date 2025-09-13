@@ -75,11 +75,42 @@ definitions:
     - category
     - title
     type: object
+  cases.MarketCaseItem:
+    properties:
+      category:
+        type: string
+      created_at:
+        type: string
+      has_my_quote:
+        description: FE bisa dipakai untuk disable tombol submit
+        type: boolean
+      id:
+        type: string
+      preview:
+        type: string
+      title:
+        type: string
+    type: object
   cases.PageCases:
     properties:
       items:
         items:
           $ref: '#/definitions/cases.CaseListItem'
+        type: array
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      pages:
+        type: integer
+      total:
+        type: integer
+    type: object
+  cases.PageMarketCases:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/cases.MarketCaseItem'
         type: array
       page:
         type: integer
@@ -472,6 +503,7 @@ paths:
   /checkout/{quoteID}:
     post:
       description: Client selects a quote → create a Stripe Checkout Session (server-side)
+        using amount from DB
       parameters:
       - description: quote id (uuid)
         in: path
@@ -485,30 +517,6 @@ paths:
           description: Created
           schema:
             $ref: '#/definitions/payments.CheckoutResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "409":
-          description: Conflict
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
       security:
       - BearerAuth: []
       summary: Create checkout (Stripe)
@@ -606,7 +614,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/cases.PageCases'
+            $ref: '#/definitions/cases.PageMarketCases'
         "401":
           description: Unauthorized
           schema:
@@ -636,26 +644,6 @@ paths:
           schema:
             additionalProperties: true
             type: object
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "401":
-          description: X-Dev-Secret invalid
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "409":
-          description: Conflict
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
       summary: Complete payment (mock)
       tags:
       - payments
@@ -671,22 +659,6 @@ paths:
           description: ok
           schema:
             type: string
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "409":
-          description: Conflict
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
       summary: Stripe webhook endpoint
       tags:
       - payments
