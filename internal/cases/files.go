@@ -51,6 +51,15 @@ func canModifyFiles(st models.CaseStatus) bool {
 	}
 }
 
+func canDeleteFiles(st models.CaseStatus) bool {
+	switch st {
+	case models.CaseOpen, models.CaseCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 /* ========================= Upload ========================= */
 
 // Upload Case Files godoc
@@ -252,8 +261,8 @@ func (h *Handler) DeleteFile(c *fiber.Ctx) error {
 	if cf.Case.ClientID.String() != userID {
 		return fiber.ErrForbidden
 	}
-	if !canModifyFiles(cf.Case.Status) {
-		return fiber.NewError(fiber.StatusForbidden, "Files cannot be modified on a closed or cancelled case")
+	if !canDeleteFiles(cf.Case.Status) {
+		return fiber.NewError(fiber.StatusForbidden, "Files cannot be deleted on a closed or engaged case")
 	}
 
 	// Delete from storage first (best-effort)
