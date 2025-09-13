@@ -220,7 +220,8 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	var rows []myQuoteItem
+	// --- inisialisasi slice agar tidak null ---
+	rows := make([]myQuoteItem, 0)
 	if err := q.Order("created_at DESC").
 		Offset((page - 1) * size).Limit(size).
 		Scan(&rows).Error; err != nil {
@@ -230,7 +231,7 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"page": page, "pageSize": size, "total": total,
 		"pages": int(math.Ceil(float64(total) / float64(size))),
-		"items": rows,
+		"items": rows, // akan [] saat kosong, bukan null
 	})
 }
 
@@ -271,7 +272,6 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid case id")
 	}
 
-	// Ensure the case belongs to the requesting client
 	var cnt int64
 	if err := h.db.Model(&models.Case{}).
 		Where("id = ? AND client_id = ?", caseID, clientID).
@@ -290,7 +290,8 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	var rows []caseQuoteItem
+	// --- inisialisasi slice agar tidak null ---
+	rows := make([]caseQuoteItem, 0)
 	if err := q.Order("created_at DESC").
 		Offset((page - 1) * size).Limit(size).
 		Scan(&rows).Error; err != nil {
@@ -300,6 +301,6 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"page": page, "pageSize": size, "total": total,
 		"pages": int(math.Ceil(float64(total) / float64(size))),
-		"items": rows,
+		"items": rows, // [] saat kosong
 	})
 }
