@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -358,6 +359,20 @@ type PageMarketCases struct {
 	Items    []MarketCaseItem `json:"items"`
 }
 
+func appLocation() *time.Location {
+	// bisa dibaca dari env, default Asia/Singapore
+	if tz := os.Getenv("APP_TZ"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return loc
+		}
+	}
+	if loc, err := time.LoadLocation("Asia/Singapore"); err == nil {
+		return loc
+	}
+	// Fallback keras bila tzdb tidak ada di container
+	return time.FixedZone("SGT", 8*60*60) // UTC+8
+}
+
 // Marketplace godoc
 // @Summary      Marketplace (anonymized)
 // @Description  Lawyer browses OPEN cases (server-side filters & pagination; no client identity)
@@ -380,11 +395,11 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 	// Parse created_since in Asia/Singapore, simpan sebagai UTC untuk konsistensi dengan DB
 	var sinceUTC *time.Time
 	if createdSince != "" {
-		if t, err := time.Parse("2006-01-02", createdSince); err == nil {
-			loc, _ := time.LoadLocation("Asia/Singapore")
-			local := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
-			utc := local.UTC()
-			sinceUTC = &utc
+		loc := appLocation() // <- tidak mungkin nil
+		// "2006-01-02" mewakili tengah malam lokal tanggal tsb
+		if localMidnight, err := time.ParseInLocation("2006-01-02", createdSince, loc); err == nil {
+			u := localMidnight.UTC()
+			sinceUTC = &u
 		}
 	}
 

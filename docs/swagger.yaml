@@ -54,44 +54,6 @@ definitions:
         maxLength: 500
         type: string
     type: object
-  cases.CaseDetailResponse:
-    properties:
-      accepted_lawyer:
-        $ref: '#/definitions/cases.PublicUser'
-      acceptedLawyerID:
-        description: <— tambahkan
-        type: string
-      acceptedQuoteID:
-        description: <— tambahkan
-        type: string
-      category:
-        type: string
-      client:
-        $ref: '#/definitions/cases.PublicUser'
-      clientID:
-        type: string
-      createdAt:
-        type: string
-      description:
-        type: string
-      engagedAt:
-        description: <— tambahkan
-        type: string
-      files:
-        items:
-          $ref: '#/definitions/models.CaseFile'
-        type: array
-      id:
-        type: string
-      quotes:
-        items:
-          $ref: '#/definitions/models.Quote'
-        type: array
-      status:
-        $ref: '#/definitions/models.CaseStatus'
-      title:
-        type: string
-    type: object
   cases.CaseHistoryDTO:
     properties:
       action:
@@ -186,74 +148,6 @@ definitions:
       total:
         type: integer
     type: object
-  cases.PublicUser:
-    properties:
-      bar_number:
-        type: string
-      email:
-        type: string
-      id:
-        type: string
-      jurisdiction:
-        type: string
-      name:
-        type: string
-    type: object
-  models.Case:
-    properties:
-      acceptedLawyerID:
-        description: <— tambahkan
-        type: string
-      acceptedQuoteID:
-        description: <— tambahkan
-        type: string
-      category:
-        type: string
-      clientID:
-        type: string
-      createdAt:
-        type: string
-      description:
-        type: string
-      engagedAt:
-        description: <— tambahkan
-        type: string
-      files:
-        items:
-          $ref: '#/definitions/models.CaseFile'
-        type: array
-      id:
-        type: string
-      quotes:
-        items:
-          $ref: '#/definitions/models.Quote'
-        type: array
-      status:
-        $ref: '#/definitions/models.CaseStatus'
-      title:
-        type: string
-    type: object
-  models.CaseFile:
-    properties:
-      case:
-        allOf:
-        - $ref: '#/definitions/models.Case'
-        description: 'Tambahan: agar Preload("Case") dan cf.Case.* valid'
-      caseID:
-        type: string
-      createdAt:
-        type: string
-      id:
-        type: string
-      key:
-        type: string
-      mime:
-        type: string
-      originalName:
-        type: string
-      size:
-        type: integer
-    type: object
   models.CaseStatus:
     enum:
     - open
@@ -278,37 +172,6 @@ definitions:
         example: Forbidden
         type: string
     type: object
-  models.Quote:
-    properties:
-      amountCents:
-        type: integer
-      caseID:
-        type: string
-      createdAt:
-        type: string
-      days:
-        type: integer
-      id:
-        type: string
-      lawyerID:
-        type: string
-      note:
-        type: string
-      status:
-        $ref: '#/definitions/models.QuoteStatus'
-      updatedAt:
-        type: string
-    type: object
-  models.QuoteStatus:
-    enum:
-    - proposed
-    - accepted
-    - rejected
-    type: string
-    x-enum-varnames:
-    - QuoteProposed
-    - QuoteAccepted
-    - QuoteRejected
   models.ValidationErrorResponse:
     properties:
       errors:
@@ -438,40 +301,6 @@ paths:
       security:
       - BearerAuth: []
       summary: Create case
-      tags:
-      - cases
-  /cases/{id}:
-    get:
-      description: Client owner atau lawyer yang diterima (engaged/closed) dapat melihat
-        detail & files + counterpart
-      parameters:
-      - description: case id (uuid)
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/cases.CaseDetailResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/models.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Case detail (owner or accepted lawyer)
       tags:
       - cases
   /cases/{id}/cancel:
