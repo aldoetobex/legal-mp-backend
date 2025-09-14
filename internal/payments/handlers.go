@@ -18,6 +18,7 @@ import (
 
 	"github.com/aldoetobex/legal-mp-backend/internal/auth"
 	"github.com/aldoetobex/legal-mp-backend/pkg/models"
+	"github.com/aldoetobex/legal-mp-backend/pkg/utils"
 )
 
 /* --------------------------------- types -------------------------------- */
@@ -314,6 +315,9 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 			tx.Rollback()
 			return fiber.ErrInternalServerError
 		}
+		// Log history engaged
+		utils.LogCaseHistory(c.Context(), tx, cs.ID, cs.ClientID,
+			"engaged", models.CaseOpen, models.CaseEngaged, "payment completed (mock)")
 	}
 
 	if err := tx.Model(&models.Payment{}).Where("id = ?", pay.ID).
@@ -428,6 +432,8 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 				tx.Rollback()
 				return fiber.ErrInternalServerError
 			}
+			utils.LogCaseHistory(c.Context(), tx, cs.ID, cs.ClientID, "engaged",
+				models.CaseOpen, models.CaseEngaged, "payment completed (stripe)")
 		}
 
 		// Simpan payment_intent sebagai POINTER bila tersedia

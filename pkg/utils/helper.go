@@ -1,0 +1,22 @@
+package utils
+
+import (
+	"context"
+	"time"
+
+	"github.com/aldoetobex/legal-mp-backend/pkg/models"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+func LogCaseHistory(ctx context.Context, db *gorm.DB, caseID, actorID uuid.UUID, action string, oldS, newS models.CaseStatus, reason string) {
+	_ = db.WithContext(ctx).Create(&models.CaseHistory{
+		CaseID:    caseID,
+		ActorID:   actorID,
+		Action:    action,
+		OldStatus: oldS,
+		NewStatus: newS,
+		Reason:    reason,
+		CreatedAt: time.Now(),
+	}).Error
+}

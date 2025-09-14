@@ -1,7 +1,6 @@
 package cases
 
 import (
-	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"math"
@@ -19,6 +18,7 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/internal/storage"
 	"github.com/aldoetobex/legal-mp-backend/pkg/models"
 	"github.com/aldoetobex/legal-mp-backend/pkg/sanitize"
+	"github.com/aldoetobex/legal-mp-backend/pkg/utils"
 	"github.com/aldoetobex/legal-mp-backend/pkg/validation"
 )
 
@@ -106,7 +106,7 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 	}
 
 	// Log: created
-	LogCaseHistory(c.Context(), h.db, cs.ID, clientUUID, "created", "", models.CaseOpen, "case created")
+	utils.LogCaseHistory(c.Context(), h.db, cs.ID, clientUUID, "created", "", models.CaseOpen, "case created")
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": cs.ID})
 }
@@ -296,12 +296,29 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 			return fiber.ErrForbidden
 		}
 
-		// redact notes if still open
-		if cs.Status == models.CaseOpen && len(cs.Quotes) > 0 {
+		// - OPEN: semua note disensor
+		// - ENGAGED/CLOSED: note dari acceptedQuote tampil apa adanya, sisanya disensor
+		if len(cs.Quotes) > 0 {
 			safeQuotes := make([]models.Quote, len(cs.Quotes))
-			for i, q := range cs.Quotes {
-				q.Note = sanitize.RedactPII(q.Note)
-				safeQuotes[i] = q
+			switch cs.Status {
+			case models.CaseOpen:
+				for i, q := range cs.Quotes {
+					q.Note = sanitize.RedactPII(q.Note)
+					safeQuotes[i] = q
+				}
+			case models.CaseEngaged, models.CaseClosed:
+				for i, q := range cs.Quotes {
+					if q.ID != cs.AcceptedQuoteID {
+						q.Note = sanitize.RedactPII(q.Note) // atau kosongkan: q.Note = ""
+					}
+					safeQuotes[i] = q
+				}
+			default:
+				// fallback konservatif: sensor semua
+				for i, q := range cs.Quotes {
+					q.Note = sanitize.RedactPII(q.Note)
+					safeQuotes[i] = q
+				}
 			}
 			cs.Quotes = safeQuotes
 		}
@@ -517,7 +534,7 @@ func (h *Handler) Cancel(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 	// Log history
-	LogCaseHistory(c.Context(), h.db, cs.ID, uuid.MustParse(clientID), "cancelled", old, models.CaseCancelled, strings.TrimSpace(in.Comment))
+	utils.LogCaseHistory(c.Context(), h.db, cs.ID, uuid.MustParse(clientID), "cancelled", old, models.CaseCancelled, strings.TrimSpace(in.Comment))
 
 	return c.JSON(fiber.Map{"status": "cancelled"})
 }
@@ -566,23 +583,12 @@ func (h *Handler) Close(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 	// Log history
-	LogCaseHistory(c.Context(), h.db, cs.ID, uuid.MustParse(clientID), "closed", old, models.CaseClosed, strings.TrimSpace(in.Comment))
+	utils.LogCaseHistory(c.Context(), h.db, cs.ID, uuid.MustParse(clientID), "closed", old, models.CaseClosed, strings.TrimSpace(in.Comment))
 
 	return c.JSON(fiber.Map{"status": "closed"})
 }
 
 // === Shared helper ===
-func LogCaseHistory(ctx context.Context, db *gorm.DB, caseID, actorID uuid.UUID, action string, oldS, newS models.CaseStatus, reason string) {
-	_ = db.WithContext(ctx).Create(&models.CaseHistory{
-		CaseID:    caseID,
-		ActorID:   actorID,
-		Action:    action,
-		OldStatus: oldS,
-		NewStatus: newS,
-		Reason:    reason,
-		CreatedAt: time.Now(),
-	}).Error
-}
 
 // List Case History godoc
 // @Summary      Case history
