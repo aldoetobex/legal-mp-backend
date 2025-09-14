@@ -10,9 +10,9 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
-	"github.com/stripe/stripe-go/paymentintent"
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/checkout/session"
+	"github.com/stripe/stripe-go/v82/paymentintent"
 	"github.com/stripe/stripe-go/v82/webhook"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -379,20 +379,23 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 		// --- OPTION 2: fetch PaymentIntent (expanded) to get receipt number, BEFORE DB TX
 		receiptNumber := ""
 		if s.PaymentIntent != nil && s.PaymentIntent.ID != "" {
-			// Perlu API key untuk panggil Stripe API
 			if stripe.Key == "" {
 				stripe.Key = os.Getenv("STRIPE_SECRET")
 			}
 			if stripe.Key != "" {
+				// Expand latest_charge agar kita bisa baca receipt_number tanpa menyentuh Charges
 				pi, piErr := paymentintent.Get(
 					s.PaymentIntent.ID,
 					&stripe.PaymentIntentParams{
-						Expand: []*string{stripe.String("charges.data")},
+						Expand: []*string{
+							stripe.String("latest_charge"),
+						},
 					},
 				)
-				if piErr == nil && pi != nil && len(pi.Charges.Data) > 0 {
-					// Ambil dari charge pertama (umumnya 1 charge)
-					receiptNumber = pi.Charges.Data[0].ReceiptNumber
+				if piErr == nil && pi != nil && pi.LatestCharge != nil {
+					// latest_charge sudah menjadi *stripe.Charge karena di-expand
+					receiptNumber = pi.LatestCharge.ReceiptNumber
+					// (Anda juga bisa ambil pi.LatestCharge.ReceiptURL bila ingin di-log)
 				}
 			}
 		}
