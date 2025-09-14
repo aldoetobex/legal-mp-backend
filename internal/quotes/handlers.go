@@ -263,14 +263,6 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// 🚨 Redact NOTE kalau case masih OPEN atau CANCELLED
-	for i := range rows {
-		if rows[i].CaseStatus == string(models.CaseOpen) ||
-			rows[i].CaseStatus == string(models.CaseCancelled) {
-			rows[i].Note = sanitize.RedactPII(rows[i].Note)
-		}
-	}
-
 	return c.JSON(fiber.Map{
 		"page":     page,
 		"pageSize": size,
@@ -310,6 +302,7 @@ type caseQuoteItem struct {
 // @Failure      403  {object}  models.ErrorResponse
 // @Failure      500  {object}  models.ErrorResponse
 // @Router       /cases/{id}/quotes [get]
+// Quotes by Case godoc
 func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 	clientID := auth.MustUserID(c)
 	caseID := c.Params("id")
@@ -319,13 +312,14 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 
 	// Ambil status case + verifikasi kepemilikan
 	var cs struct {
-		ID       uuid.UUID
-		ClientID uuid.UUID
-		Status   models.CaseStatus
+		ID              uuid.UUID
+		ClientID        uuid.UUID
+		Status          models.CaseStatus
+		AcceptedQuoteID uuid.UUID
 	}
 	if err := h.db.
 		Model(&models.Case{}).
-		Select("id, client_id, status").
+		Select("id, client_id, status, accepted_quote_id").
 		Where("id = ?", caseID).
 		First(&cs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -347,7 +341,6 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Selalu inisialisasi slice agar tidak null
 	rows := make([]caseQuoteItem, 0, size)
 	if err := q.
 		Order("created_at DESC").
@@ -357,10 +350,19 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// *** Redact hanya NOTE saat status case masih OPEN ***
-	if cs.Status == models.CaseOpen || cs.Status == models.CaseCancelled {
+	// 🔒 Redact logic
+	switch cs.Status {
+	case models.CaseOpen, models.CaseCancelled:
+		// Semua note disensor
 		for i := range rows {
 			rows[i].Note = sanitize.RedactPII(rows[i].Note)
+		}
+	case models.CaseEngaged, models.CaseClosed:
+		// Hanya accepted_quote_id yang boleh utuh
+		for i := range rows {
+			if rows[i].ID != cs.AcceptedQuoteID {
+				rows[i].Note = sanitize.RedactPII(rows[i].Note)
+			}
 		}
 	}
 
@@ -369,6 +371,6 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		"pageSize": size,
 		"total":    total,
 		"pages":    int(math.Ceil(float64(total) / float64(size))),
-		"items":    rows, // selalu [] ketika kosong
+		"items":    rows,
 	})
 }

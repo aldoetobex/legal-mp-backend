@@ -10,6 +10,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/stripe/stripe-go/paymentintent"
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/checkout/session"
 	"github.com/stripe/stripe-go/v82/webhook"
@@ -375,6 +376,27 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.NewError(http.StatusBadRequest, "invalid payment_id")
 		}
 
+		// --- OPTION 2: fetch PaymentIntent (expanded) to get receipt number, BEFORE DB TX
+		receiptNumber := ""
+		if s.PaymentIntent != nil && s.PaymentIntent.ID != "" {
+			// Perlu API key untuk panggil Stripe API
+			if stripe.Key == "" {
+				stripe.Key = os.Getenv("STRIPE_SECRET")
+			}
+			if stripe.Key != "" {
+				pi, piErr := paymentintent.Get(
+					s.PaymentIntent.ID,
+					&stripe.PaymentIntentParams{
+						Expand: []*string{stripe.String("charges.data")},
+					},
+				)
+				if piErr == nil && pi != nil && len(pi.Charges.Data) > 0 {
+					// Ambil dari charge pertama (umumnya 1 charge)
+					receiptNumber = pi.Charges.Data[0].ReceiptNumber
+				}
+			}
+		}
+
 		tx := h.db.Begin()
 
 		var pay models.Payment
@@ -432,8 +454,13 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 				tx.Rollback()
 				return fiber.ErrInternalServerError
 			}
+			// Bangun reason dengan receipt number (jika tersedia)
+			reason := "payment completed (stripe)"
+			if receiptNumber != "" {
+				reason = fmt.Sprintf("payment completed (stripe: %s)", receiptNumber)
+			}
 			utils.LogCaseHistory(c.Context(), tx, cs.ID, cs.ClientID, "engaged",
-				models.CaseOpen, models.CaseEngaged, "payment completed (stripe)")
+				models.CaseOpen, models.CaseEngaged, reason)
 		}
 
 		// Simpan payment_intent sebagai POINTER bila tersedia
