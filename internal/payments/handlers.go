@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/checkout/session"
-	"github.com/stripe/stripe-go/v82/paymentintent"
 	"github.com/stripe/stripe-go/v82/webhook"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -376,30 +375,6 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.NewError(http.StatusBadRequest, "invalid payment_id")
 		}
 
-		// --- OPTION 2: fetch PaymentIntent (expanded) to get receipt number, BEFORE DB TX
-		receiptNumber := ""
-		if s.PaymentIntent != nil && s.PaymentIntent.ID != "" {
-			if stripe.Key == "" {
-				stripe.Key = os.Getenv("STRIPE_SECRET")
-			}
-			if stripe.Key != "" {
-				// Expand latest_charge agar kita bisa baca receipt_number tanpa menyentuh Charges
-				pi, piErr := paymentintent.Get(
-					s.PaymentIntent.ID,
-					&stripe.PaymentIntentParams{
-						Expand: []*string{
-							stripe.String("latest_charge"),
-						},
-					},
-				)
-				if piErr == nil && pi != nil && pi.LatestCharge != nil {
-					// latest_charge sudah menjadi *stripe.Charge karena di-expand
-					receiptNumber = pi.LatestCharge.ReceiptNumber
-					// (Anda juga bisa ambil pi.LatestCharge.ReceiptURL bila ingin di-log)
-				}
-			}
-		}
-
 		tx := h.db.Begin()
 
 		var pay models.Payment
@@ -457,13 +432,22 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 				tx.Rollback()
 				return fiber.ErrInternalServerError
 			}
-			// Bangun reason dengan receipt number (jika tersedia)
+
 			reason := "payment completed (stripe)"
-			if receiptNumber != "" {
-				reason = fmt.Sprintf("payment completed (stripe: %s)", receiptNumber)
+			if pay.StripePaymentIntent != nil && *pay.StripePaymentIntent != "" {
+				reason = fmt.Sprintf("payment completed (stripe: %s)", *pay.StripePaymentIntent)
 			}
-			utils.LogCaseHistory(c.Context(), tx, cs.ID, cs.ClientID, "engaged",
-				models.CaseOpen, models.CaseEngaged, reason)
+
+			utils.LogCaseHistory(
+				c.Context(),
+				tx,
+				cs.ID,
+				cs.ClientID,
+				"engaged",
+				models.CaseOpen,
+				models.CaseEngaged,
+				reason,
+			)
 		}
 
 		// Simpan payment_intent sebagai POINTER bila tersedia
