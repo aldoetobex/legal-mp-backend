@@ -18,8 +18,12 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/pkg/sanitize"
 )
 
-/* ========= helpers ========= */
+/* ============================================================================
+   Helpers
+   ============================================================================ */
 
+// openTestDB loads TEST_DATABASE_URL, opens a real Postgres connection,
+// runs migrations, and registers a cleanup that truncates test tables after run.
 func openTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	_ = godotenv.Load()
@@ -39,7 +43,7 @@ func openTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// Bersihin SETELAH test selesai, bukan di awal/tengah
+	// Truncate AFTER each test (data survives within a single test).
 	t.Cleanup(func() {
 		sql := `
 TRUNCATE TABLE
@@ -58,6 +62,8 @@ RESTART IDENTITY CASCADE`
 	return db
 }
 
+// withTx wraps a function in a DB transaction and commits it at the end.
+// If the function panics, the transaction is rolled back and the panic is rethrown.
 func withTx(t *testing.T, db *gorm.DB, fn func(tx *gorm.DB)) {
 	t.Helper()
 	tx := db.Begin()
@@ -76,10 +82,12 @@ func withTx(t *testing.T, db *gorm.DB, fn func(tx *gorm.DB)) {
 	}
 }
 
-// injectAuth: set locals biar MustUserID / MustRole ketemu.
+// injectAuth puts multiple common auth locals into Fiber context.
+// This makes MustUserID / MustRole happy without real JWT.
 func injectAuth(userID uuid.UUID, role string) fiber.Handler {
 	id := userID.String()
 	return func(c *fiber.Ctx) error {
+		// Common aliases you might check in handlers
 		c.Locals("user_id", id)
 		c.Locals("userID", id)
 		c.Locals("userId", id)
@@ -95,24 +103,26 @@ func injectAuth(userID uuid.UUID, role string) fiber.Handler {
 	}
 }
 
-// ---- ganti newTestApp: taruh /mine sebelum /:id
+// newTestApp registers routes in a safe order for tests.
+// Static paths (like /mine) are added BEFORE parameterized ones (/:id)
+// so they don’t get shadowed by :id.
 func newTestApp(h *Handler, userID uuid.UUID, role string) *fiber.App {
 	app := fiber.New()
 	app.Use(injectAuth(userID, role))
 
-	// ⚠️ Daftarkan rute statis lebih dulu agar tidak “dimakan” oleh :id
+	// Static / explicit routes first
 	app.Get("/api/cases/mine", h.ListMine)
 	app.Get("/api/marketplace", h.Marketplace)
 
-	// Files (dipakai oleh test Signed URL / Upload)
+	// File endpoints used by tests
 	app.Post("/api/cases/:id/files", h.UploadFile)
 	app.Get("/api/files/:fileID/signed-url", h.SignedDownloadURL)
 	app.Delete("/api/files/:fileID", h.DeleteFile)
 
-	// Terakhir: rute dengan param
+	// Parameterized routes last
 	app.Get("/api/cases/:id", h.GetDetail)
 
-	// Create dipakai test validasi
+	// Create endpoint for validation tests
 	app.Post("/api/cases", h.Create)
 
 	return app
@@ -124,6 +134,7 @@ type seedResult struct {
 	CaseID   uuid.UUID
 }
 
+// seedCase inserts a client, a lawyer, and one case with the given status.
 func seedCase(t *testing.T, db *gorm.DB, status models.CaseStatus) seedResult {
 	clientID := uuid.New()
 	lawyerID := uuid.New()
@@ -159,8 +170,8 @@ func seedCase(t *testing.T, db *gorm.DB, status models.CaseStatus) seedResult {
 	return seedResult{ClientID: clientID, LawyerID: lawyerID, CaseID: caseID}
 }
 
-// makeCase: benar2 INSERT satu case untuk client tertentu dan mengembalikan ID-nya.
-// gunakan createdAt supaya urutan DESC deterministic terhadap handler kamu.
+// makeCase inserts a single OPEN case for a given client with a fixed CreatedAt.
+// Useful for deterministic DESC pagination.
 func makeCase(t *testing.T, tx *gorm.DB, clientID uuid.UUID, createdAt time.Time) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
@@ -178,6 +189,7 @@ func makeCase(t *testing.T, tx *gorm.DB, clientID uuid.UUID, createdAt time.Time
 	return id
 }
 
+// addQuote adds a PROPOSED quote (quick helper).
 func addQuote(t *testing.T, tx *gorm.DB, caseID, lawyerID uuid.UUID, note string) models.Quote {
 	q := models.Quote{
 		CaseID: caseID, LawyerID: lawyerID,
@@ -190,8 +202,11 @@ func addQuote(t *testing.T, tx *gorm.DB, caseID, lawyerID uuid.UUID, note string
 	return q
 }
 
-/* ========= TESTS ========= */
+/* ============================================================================
+   Tests — redaction, masking, pagination, permissions, marketplace filters
+   ============================================================================ */
 
+// Client should see redacted quote notes while case is OPEN.
 func Test_Client_SeesRedactedNotes_WhenCaseOpen(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
@@ -219,6 +234,7 @@ func Test_Client_SeesRedactedNotes_WhenCaseOpen(t *testing.T) {
 	})
 }
 
+// Client should see original quote notes after case is ENGAGED.
 func Test_Client_SeesOriginalNotes_WhenEngaged(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
@@ -242,6 +258,7 @@ func Test_Client_SeesOriginalNotes_WhenEngaged(t *testing.T) {
 	})
 }
 
+// File names should be masked (SHA1 + same extension) in GetDetail response.
 func Test_FileNameIsSHA1Masked_OnGetDetail(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
@@ -279,10 +296,11 @@ func Test_FileNameIsSHA1Masked_OnGetDetail(t *testing.T) {
 	})
 }
 
+// ListMine should return deterministic pagination and quote counts.
 func Test_ListMine_Pagination_And_QuoteCounts(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
-		// user
+		// Create users
 		clientID := uuid.New()
 		if err := tx.Create(&models.User{ID: clientID, Email: "c_" + clientID.String()[:6] + "@x.com", Role: models.RoleClient}).Error; err != nil {
 			t.Fatal(err)
@@ -292,24 +310,21 @@ func Test_ListMine_Pagination_And_QuoteCounts(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// bikin 3 case milik client (urutan dibuat deterministik: c3 terbaru)
+		// Create 3 cases (c3 is newest)
 		now := time.Now()
 		c1 := makeCase(t, tx, clientID, now.Add(-3*time.Minute))
 		c2 := makeCase(t, tx, clientID, now.Add(-2*time.Minute))
-		c3 := makeCase(t, tx, clientID, now.Add(-1*time.Minute)) // newest
+		c3 := makeCase(t, tx, clientID, now.Add(-1*time.Minute))
 
-		// quote:
-		// c1: 2 quotes
+		// Quote counts: c1=2, c2=1, c3=0
 		addQuote(t, tx, c1, lawyerID, "Q1")
 		addQuote(t, tx, c1, uuid.New(), "Q2")
-		// c2: 1 quote
 		addQuote(t, tx, c2, lawyerID, "Q3")
-		// c3: 0 quote
 
 		h := NewHandler(tx, nil)
 		app := newTestApp(h, clientID, string(models.RoleClient))
 
-		// pageSize=2 -> harusnya mengembalikan 2 item pertama berdasar created_at DESC: c3, c2
+		// pageSize=2 → expect c3, c2 on page 1
 		req := httptest.NewRequest("GET", "/api/cases/mine?page=1&pageSize=2", nil)
 		resp, _ := app.Test(req)
 		if resp.StatusCode != 200 {
@@ -335,7 +350,7 @@ func Test_ListMine_Pagination_And_QuoteCounts(t *testing.T) {
 			t.Fatalf("want 2 items on first page, got %d", len(out.Items))
 		}
 
-		// karena DESC: item[0] = c3 (0 quotes), item[1] = c2 (1 quote)
+		// DESC: item[0] = c3 (0 quotes), item[1] = c2 (1 quote)
 		if out.Items[0].ID != c3.String() || out.Items[0].Quotes != 0 {
 			t.Fatalf("page item[0] should be c3 with 0 quotes, got %#v", out.Items[0])
 		}
@@ -343,7 +358,7 @@ func Test_ListMine_Pagination_And_QuoteCounts(t *testing.T) {
 			t.Fatalf("page item[1] should be c2 with 1 quote, got %#v", out.Items[1])
 		}
 
-		// cek halaman ke-2 harus c1 (2 quotes)
+		// Page 2 should return c1 with 2 quotes
 		req2 := httptest.NewRequest("GET", "/api/cases/mine?page=2&pageSize=2", nil)
 		resp2, _ := app.Test(req2)
 		if resp2.StatusCode != 200 {
@@ -362,6 +377,7 @@ func Test_ListMine_Pagination_And_QuoteCounts(t *testing.T) {
 	})
 }
 
+// newTestAppFiles creates a tiny app that only exposes signed URL route.
 func newTestAppFiles(h *Handler, userID uuid.UUID, role string) *fiber.App {
 	app := fiber.New()
 	app.Use(injectAuth(userID, role))
@@ -374,6 +390,7 @@ type seed struct {
 	FileID                     uuid.UUID
 }
 
+// seedEngagedWithFile inserts an ENGAGED case with accepted lawyer and one file.
 func seedEngagedWithFile(t *testing.T, tx *gorm.DB) seed {
 	clientID, lawyerID, caseID := uuid.New(), uuid.New(), uuid.New()
 	emailC := "c_" + uuid.NewString()[:8] + "@x.com"
@@ -387,13 +404,17 @@ func seedEngagedWithFile(t *testing.T, tx *gorm.DB) seed {
 	return seed{clientID, lawyerID, caseID, f.ID}
 }
 
-/* tests */
+/* ============================================================================
+   Tests — signed URL authorization
+   ============================================================================ */
+
+// Owner client can fetch signed URL (200).
 func Test_SignedURL_ClientOwner_OK(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
 		seed := seedCase(t, tx, models.CaseOpen)
 
-		// simpan file
+		// Insert a file
 		f := models.CaseFile{
 			CaseID:       seed.CaseID,
 			Key:          "case/" + seed.CaseID.String() + "/doc.pdf",
@@ -406,7 +427,7 @@ func Test_SignedURL_ClientOwner_OK(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		h := NewHandler(tx, nil) // sb=nil → fallback URL dummy
+		h := NewHandler(tx, nil) // sb=nil → use dummy signed URL
 		app := newTestApp(h, seed.ClientID, string(models.RoleClient))
 
 		req := httptest.NewRequest("GET", "/api/files/"+f.ID.String()+"/signed-url", nil)
@@ -422,6 +443,7 @@ func Test_SignedURL_ClientOwner_OK(t *testing.T) {
 	})
 }
 
+// Accepted lawyer can fetch signed URL (200).
 func Test_SignedURL_LawyerOnlyIfAccepted_OK(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
@@ -436,6 +458,7 @@ func Test_SignedURL_LawyerOnlyIfAccepted_OK(t *testing.T) {
 	})
 }
 
+// Random users cannot fetch signed URL (403).
 func Test_SignedURL_RandomUser_Forbidden(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
@@ -452,6 +475,11 @@ func Test_SignedURL_RandomUser_Forbidden(t *testing.T) {
 	})
 }
 
+/* ============================================================================
+   Helpers for marketplace tests
+   ============================================================================ */
+
+// seedOpenCase inserts an OPEN case with given description and createdAt.
 func seedOpenCase(t *testing.T, tx *gorm.DB, desc string, createdAt time.Time) uuid.UUID {
 	clientID := uuid.New()
 	email := "c_" + uuid.NewString()[:8] + "@x.com"
@@ -465,15 +493,19 @@ func seedOpenCase(t *testing.T, tx *gorm.DB, desc string, createdAt time.Time) u
 	return cs.ID
 }
 
-/* tests */
+/* ============================================================================
+   Tests — marketplace redaction and filter behavior
+   ============================================================================ */
+
+// Marketplace should redact PII in preview.
 func Test_Marketplace_RedactsPreview(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
-		// lawyer user (viewer)
+		// Viewer (lawyer)
 		lawyer := uuid.New()
 		_ = tx.Create(&models.User{ID: lawyer, Email: "l@t", Role: models.RoleLawyer}).Error
 
-		// case dgn PII
+		// Case that contains PII
 		_ = seedOpenCase(t, tx, "Hubungi saya di test@example.com 08123456789", time.Now())
 
 		app := newTestApp(NewHandler(tx, nil), lawyer, string(models.RoleLawyer))
@@ -496,13 +528,14 @@ func Test_Marketplace_RedactsPreview(t *testing.T) {
 	})
 }
 
+// Marketplace should filter by created_since and support pagination.
 func Test_Marketplace_FilterCreatedSince_And_Pagination(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
 		lawyer := uuid.New()
 		_ = tx.Create(&models.User{ID: lawyer, Email: "l2@t", Role: models.RoleLawyer}).Error
 
-		// 2 kasus lama (8 hari lalu), 1 kasus baru (hari ini)
+		// Two old cases (8 days ago) and one new (today)
 		eightDays := time.Now().AddDate(0, 0, -8)
 		_ = seedOpenCase(t, tx, "old 1", eightDays)
 		_ = seedOpenCase(t, tx, "old 2", eightDays)
@@ -510,7 +543,7 @@ func Test_Marketplace_FilterCreatedSince_And_Pagination(t *testing.T) {
 
 		app := newTestApp(NewHandler(tx, nil), lawyer, string(models.RoleLawyer))
 
-		// filter created_since = 7 hari lalu (Asia/Singapore)
+		// Filter created_since = 7 days ago (Asia/Singapore)
 		since := time.Now().AddDate(0, 0, -7).Format("2006-01-02")
 		req := httptest.NewRequest("GET", "/api/marketplace?page=1&pageSize=1&created_since="+since, nil)
 		resp, _ := app.Test(req)
@@ -524,7 +557,7 @@ func Test_Marketplace_FilterCreatedSince_And_Pagination(t *testing.T) {
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 
-		// seharusnya hanya kasus baru yang lewat filter 7 hari (total 1) dan dipotong pageSize=1
+		// Only the new case should match (total 1), and pageSize=1 should cut it to 1 item.
 		if out.Total != 1 {
 			t.Fatalf("want total=1 after filter, got %d", out.Total)
 		}
@@ -534,13 +567,14 @@ func Test_Marketplace_FilterCreatedSince_And_Pagination(t *testing.T) {
 	})
 }
 
+// Marketplace should redact summaries, mark HasMyQuote correctly, and support created_since.
 func Test_Marketplace_Redaction_HasMyQuote_CreatedSince(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
 		lawyer := uuid.New()
 		_ = tx.Create(&models.User{ID: lawyer, Email: "lw_" + lawyer.String()[:6] + "@x.com", Role: models.RoleLawyer})
 
-		// case A: yesterday (punya preview ber-PII)
+		// Case A: yesterday (contains PII)
 		ownerA := uuid.New()
 		_ = tx.Create(&models.User{ID: ownerA, Email: "oa_" + ownerA.String()[:6] + "@x.com", Role: models.RoleClient})
 		csA := models.Case{
@@ -554,7 +588,7 @@ func Test_Marketplace_Redaction_HasMyQuote_CreatedSince(t *testing.T) {
 		}
 		_ = tx.Create(&csA).Error
 
-		// case B: today; lawyer sudah quote
+		// Case B: today; the same lawyer already quoted
 		ownerB := uuid.New()
 		_ = tx.Create(&models.User{ID: ownerB, Email: "ob_" + ownerB.String()[:6] + "@x.com", Role: models.RoleClient})
 		csB := models.Case{
@@ -576,7 +610,7 @@ func Test_Marketplace_Redaction_HasMyQuote_CreatedSince(t *testing.T) {
 		h := NewHandler(tx, nil)
 		app := newTestApp(h, lawyer, string(models.RoleLawyer))
 
-		// a) tanpa filter → A dan B muncul; A.preview harus ter-redact; B.has_my_quote = true
+		// a) No filter → A and B present; A.Preview must be redacted; B.HasMyQuote = true
 		req1 := httptest.NewRequest("GET", "/api/marketplace?page=1&pageSize=50", nil)
 		resp1, _ := app.Test(req1)
 		if resp1.StatusCode != 200 {
@@ -593,7 +627,6 @@ func Test_Marketplace_Redaction_HasMyQuote_CreatedSince(t *testing.T) {
 		if len(out1.Items) < 2 {
 			t.Fatalf("want >=2 items, got %d", len(out1.Items))
 		}
-		// cek redaksi
 		for _, it := range out1.Items {
 			if it.ID == csA.ID.String() {
 				if strings.Contains(it.Preview, "@") || strings.Contains(it.Preview, "0812") {
@@ -605,7 +638,7 @@ func Test_Marketplace_Redaction_HasMyQuote_CreatedSince(t *testing.T) {
 			}
 		}
 
-		// b) filter created_since = today → hanya B
+		// b) Filter created_since = today → only Case B should remain
 		today := time.Now().In(time.FixedZone("Asia/Singapore", 8*3600)).Format("2006-01-02")
 		req2 := httptest.NewRequest("GET", "/api/marketplace?created_since="+today, nil)
 		resp2, _ := app.Test(req2)
@@ -624,12 +657,17 @@ func Test_Marketplace_Redaction_HasMyQuote_CreatedSince(t *testing.T) {
 	})
 }
 
+/* ============================================================================
+   Tests — signed URL auth with accepted lawyer
+   ============================================================================ */
+
+// Accepted lawyer OK, other lawyer 403.
 func Test_SignedURL_Lawyer_OnlyWhenEngagedAccepted(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
 		seed := seedCase(t, tx, models.CaseEngaged)
 
-		// buat accepted quote
+		// Create an accepted quote for the engaged case
 		q := models.Quote{
 			CaseID: seed.CaseID, LawyerID: seed.LawyerID,
 			AmountCents: 1000, Days: 3, Note: "ok",
@@ -638,7 +676,7 @@ func Test_SignedURL_Lawyer_OnlyWhenEngagedAccepted(t *testing.T) {
 		if err := tx.Create(&q).Error; err != nil {
 			t.Fatal(err)
 		}
-		// set accepted ids di case
+		// Link accepted IDs on the case
 		if err := tx.Model(&models.Case{}).
 			Where("id = ?", seed.CaseID).
 			Updates(map[string]any{
@@ -648,7 +686,7 @@ func Test_SignedURL_Lawyer_OnlyWhenEngagedAccepted(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// file
+		// Add a file
 		f := models.CaseFile{
 			CaseID:       seed.CaseID,
 			Key:          "case/" + seed.CaseID.String() + "/doc.pdf",
@@ -662,7 +700,8 @@ func Test_SignedURL_Lawyer_OnlyWhenEngagedAccepted(t *testing.T) {
 		}
 
 		h := NewHandler(tx, nil)
-		// accepted lawyer → 200
+
+		// Accepted lawyer → 200
 		appOK := newTestApp(h, seed.LawyerID, string(models.RoleLawyer))
 		req1 := httptest.NewRequest("GET", "/api/files/"+f.ID.String()+"/signed-url", nil)
 		resp1, _ := appOK.Test(req1)
@@ -670,7 +709,7 @@ func Test_SignedURL_Lawyer_OnlyWhenEngagedAccepted(t *testing.T) {
 			t.Fatalf("accepted lawyer want 200, got %d", resp1.StatusCode)
 		}
 
-		// random lawyer → 403
+		// Other random lawyer → 403
 		otherLawyer := uuid.New()
 		_ = tx.Create(&models.User{ID: otherLawyer, Email: "oth_" + otherLawyer.String()[:6] + "@x.com", Role: models.RoleLawyer})
 		app403 := newTestApp(h, otherLawyer, string(models.RoleLawyer))

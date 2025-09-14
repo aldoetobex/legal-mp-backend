@@ -1,4 +1,3 @@
-// internal/quotes/quotes_test.go
 package quotes
 
 import (
@@ -20,8 +19,12 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/pkg/models"
 )
 
-/* ===== helpers ===== */
+/* ============================================================================
+   Helpers
+   ============================================================================ */
 
+// openTestDB connects to TEST_DATABASE_URL, migrates tables, and truncates them
+// after tests finish (cleanup runs once at the end).
 func openTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	_ = godotenv.Load()
@@ -41,7 +44,6 @@ func openTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// Bersihin SETELAH test selesai, bukan di awal/tengah
 	t.Cleanup(func() {
 		sql := `
 TRUNCATE TABLE
@@ -60,6 +62,7 @@ RESTART IDENTITY CASCADE`
 	return db
 }
 
+// withTx runs fn inside a transaction. It commits on success and rolls back on panic.
 func withTx(t *testing.T, db *gorm.DB, fn func(tx *gorm.DB)) {
 	t.Helper()
 	tx := db.Begin()
@@ -84,6 +87,7 @@ type seedOut struct {
 	CaseID   uuid.UUID
 }
 
+// seedCase inserts a client, a lawyer, and one case with the given status.
 func seedCase(t *testing.T, tx *gorm.DB, status models.CaseStatus) seedOut {
 	t.Helper()
 	clientID := uuid.New()
@@ -115,12 +119,13 @@ func seedCase(t *testing.T, tx *gorm.DB, status models.CaseStatus) seedOut {
 	return seedOut{ClientID: clientID, LawyerID: lawyerID, CaseID: cs.ID}
 }
 
-// versi tanpa tx untuk test yang butuh commit (dipakai di Upsert test)
+// seedCaseNoTx writes using the base *gorm.DB (not a tx) so rows are committed
+// immediately, useful when the handler uses the same *gorm.DB instance.
 func seedCaseNoTx(t *testing.T, db *gorm.DB, status models.CaseStatus) seedOut {
 	return seedCase(t, db, status)
 }
 
-// injectAuth: pasang berbagai key supaya MustUserID/MustRole bisa kebaca
+// injectAuth sets Locals so MustUserID/MustRole read identity and role properly.
 func injectAuth(userID uuid.UUID, role string) fiber.Handler {
 	id := userID.String()
 	return func(c *fiber.Ctx) error {
@@ -138,6 +143,7 @@ func injectAuth(userID uuid.UUID, role string) fiber.Handler {
 	}
 }
 
+// newTestApp exposes only the endpoints used in these tests.
 func newTestApp(h *Handler, userID uuid.UUID, role string) *fiber.App {
 	app := fiber.New()
 	app.Use(injectAuth(userID, role))
@@ -146,15 +152,18 @@ func newTestApp(h *Handler, userID uuid.UUID, role string) *fiber.App {
 	return app
 }
 
-/* ================== TESTS ================== */
+/* ============================================================================
+   Tests — Upsert behavior
+   ============================================================================ */
 
-// ---- FIXED: seed pakai DB langsung (commit), handler juga pakai DB yang sama
+// Upsert should update the existing PROPOSED quote, not insert a new row.
 func Test_UpsertQuote_UpdatesExistingNotCreateNew(t *testing.T) {
 	db := openTestDB(t)
 
-	seed := seedCaseNoTx(t, db, models.CaseOpen) // <— no tx, jadi committed
+	// Seed without tx so data is committed for the handler.
+	seed := seedCaseNoTx(t, db, models.CaseOpen)
 
-	hq := NewHandler(db) // <— handler pakai db (bukan tx)
+	hq := NewHandler(db)
 	app := newTestApp(hq, seed.LawyerID, string(models.RoleLawyer))
 
 	body1 := `{"case_id":"` + seed.CaseID.String() + `","amount_cents":5000,"days":5,"note":"A"}`
@@ -173,6 +182,7 @@ func Test_UpsertQuote_UpdatesExistingNotCreateNew(t *testing.T) {
 		t.Fatalf("upsert-2 got %d", resp2.StatusCode)
 	}
 
+	// Ensure only one row exists for (case_id, lawyer_id)
 	var cnt int64
 	if err := db.Model(&models.Quote{}).
 		Where("case_id = ? AND lawyer_id = ?", seed.CaseID, seed.LawyerID).
@@ -183,6 +193,7 @@ func Test_UpsertQuote_UpdatesExistingNotCreateNew(t *testing.T) {
 		t.Fatalf("want 1 row, got %d", cnt)
 	}
 
+	// Ensure the quote was updated with the second payload
 	var q models.Quote
 	if err := db.First(&q, "case_id = ? AND lawyer_id = ?", seed.CaseID, seed.LawyerID).Error; err != nil {
 		t.Fatal(err)
@@ -192,6 +203,11 @@ func Test_UpsertQuote_UpdatesExistingNotCreateNew(t *testing.T) {
 	}
 }
 
+/* ============================================================================
+   Tests — listing visibility
+   ============================================================================ */
+
+// /quotes/mine should return only the caller's quotes.
 func Test_ListMine_ReturnsOnlyMyQuotes(t *testing.T) {
 	db := openTestDB(t)
 	withTx(t, db, func(tx *gorm.DB) {
@@ -236,10 +252,15 @@ func Test_ListMine_ReturnsOnlyMyQuotes(t *testing.T) {
 		}
 	})
 }
+
+/* ============================================================================
+   Tests — state validation
+   ============================================================================ */
+
+// Upsert should be rejected when the case is not OPEN (ENGAGED/CLOSED/CANCELLED).
 func Test_UpsertQuote_Forbidden_WhenCaseNotOpen(t *testing.T) {
 	db := openTestDB(t)
 
-	// Coba untuk tiga status non-OPEN
 	for _, st := range []models.CaseStatus{
 		models.CaseEngaged,
 		models.CaseClosed,

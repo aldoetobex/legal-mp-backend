@@ -26,7 +26,7 @@ definitions:
         maxLength: 120
         type: string
       jurisdiction:
-        description: Opsional khusus lawyer
+        description: Optional for lawyers
         type: string
       name:
         maxLength: 80
@@ -50,7 +50,7 @@ definitions:
   cases.ActionRequest:
     properties:
       comment:
-        description: optional note shown in history
+        description: Optional comment shown in history
         maxLength: 500
         type: string
     type: object
@@ -109,7 +109,7 @@ definitions:
       created_at:
         type: string
       has_my_quote:
-        description: FE bisa dipakai untuk disable tombol submit
+        description: FE can use this to disable "submit quote"
         type: boolean
       id:
         type: string
@@ -163,14 +163,44 @@ definitions:
   models.ErrorResponse:
     properties:
       code:
+        description: machine-friendly error code
         example: FORBIDDEN
         type: string
       error:
+        description: always true for error cases
         example: true
         type: boolean
       message:
+        description: human-readable error message
         example: Forbidden
         type: string
+    type: object
+  models.Role:
+    enum:
+    - client
+    - lawyer
+    type: string
+    x-enum-varnames:
+    - RoleClient
+    - RoleLawyer
+  models.User:
+    properties:
+      barNumber:
+        type: string
+      createdAt:
+        type: string
+      email:
+        type: string
+      id:
+        type: string
+      jurisdiction:
+        type: string
+      name:
+        type: string
+      passwordHash:
+        type: string
+      role:
+        $ref: '#/definitions/models.Role'
     type: object
   models.ValidationErrorResponse:
     properties:
@@ -179,6 +209,7 @@ definitions:
           items:
             type: string
           type: array
+        description: field name -> list of error messages
         type: object
       message:
         example: Validation failed
@@ -211,7 +242,7 @@ definitions:
         description: optional
         type: string
       case_title:
-        description: <—
+        description: from cases.title
         type: string
       created_at:
         type: string
@@ -442,7 +473,7 @@ paths:
       - files
   /cases/{id}/history:
     get:
-      description: Riwayat perubahan case (owner & accepted lawyer)
+      description: List case status changes (owner & accepted lawyer only)
       parameters:
       - description: case id (uuid)
         in: path
@@ -550,8 +581,7 @@ paths:
       - cases
   /checkout/{quoteID}:
     post:
-      description: Client selects a quote → create a Stripe Checkout Session (server-side)
-        using amount from DB
+      description: Create a Stripe Checkout Session using amount from DB
       parameters:
       - description: quote id (uuid)
         in: path
@@ -645,7 +675,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Login dan dapatkan JWT
+      description: Authenticate and receive a JWT
       parameters:
       - description: Login payload
         in: body
@@ -708,11 +738,30 @@ paths:
       summary: Marketplace (anonymized)
       tags:
       - marketplace
+  /me:
+    get:
+      description: Return full profile of the authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.User'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get current user profile
+      tags:
+      - auth
   /payments/mock/complete:
     post:
       consumes:
       - application/json
-      description: 'Dev-only: finalize payment and set a single winner (atomic transaction)'
+      description: 'Dev-only: finalize payment and mark a single quote as accepted'
       parameters:
       - description: Payment ID
         in: body
@@ -836,7 +885,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Register user baru (client atau lawyer)
+      description: Register a new user (client or lawyer)
       parameters:
       - description: Signup payload
         in: body

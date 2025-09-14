@@ -13,27 +13,32 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/pkg/validation"
 )
 
-// DTOs untuk Swagger
+/* ================================ DTOs ================================= */
+
+// Request body for /signup
 type SignupRequest struct {
 	Role     string `json:"role" validate:"required,oneof=client lawyer"`
 	Name     string `json:"name" validate:"required,min=2,max=80"`
 	Email    string `json:"email" validate:"required,email,max=120"`
 	Password string `json:"password" validate:"required,min=6,max=72"`
-	// Opsional khusus lawyer
+	// Optional for lawyers
 	Jurisdiction string `json:"jurisdiction" validate:"omitempty,jurisdiction"`
 	BarNumber    string `json:"bar_number" validate:"omitempty,barnum"`
 }
 
+// Request body for /login
 type LoginRequest struct {
 	Email    string `json:"email" validate:"required,email,max=60"`
 	Password string `json:"password" validate:"required"`
 }
 
+// Standard auth response
 type AuthResponse struct {
 	Token string `json:"token"`
 	Role  string `json:"role"`
 }
 
+// Profile response for /me
 type UserProfileResponse struct {
 	ID           uuid.UUID   `json:"id"`
 	Email        string      `json:"email"`
@@ -44,13 +49,16 @@ type UserProfileResponse struct {
 	CreatedAt    time.Time   `json:"created_at"`
 }
 
+/* ============================== Handler ================================= */
+
 type Handler struct{ db *gorm.DB }
 
 func NewHandler(db *gorm.DB) *Handler { return &Handler{db: db} }
 
-// Signup godoc
+/* =============================== Signup ================================= */
+
 // @Summary      Sign up
-// @Description  Register user baru (client atau lawyer)
+// @Description  Register a new user (client or lawyer)
 // @Tags         auth
 // @Accept       json
 // @Produce      json
@@ -64,15 +72,19 @@ func (h *Handler) Signup(c *fiber.Ctx) error {
 	if err := c.BodyParser(&in); err != nil {
 		return fiber.ErrBadRequest
 	}
-	// normalisasi kecil
+
+	// Normalize email
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
 
-	// validasi ala Laravel
+	// Validate request (Laravel-like error shape)
 	if errs, _ := validation.Validate(in); errs != nil {
 		return validation.Respond(c, errs)
 	}
 
+	// Hash password
 	hash, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+
+	// Create user
 	u := models.User{
 		Email:        in.Email,
 		PasswordHash: string(hash),
@@ -85,13 +97,15 @@ func (h *Handler) Signup(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "email already exists")
 	}
 
+	// Issue JWT
 	token, _ := IssueToken(u.ID.String(), string(u.Role))
 	return c.Status(fiber.StatusCreated).JSON(AuthResponse{Token: token, Role: string(u.Role)})
 }
 
-// Login godoc
+/* ================================ Login ================================= */
+
 // @Summary      Login
-// @Description  Login dan dapatkan JWT
+// @Description  Authenticate and receive a JWT
 // @Tags         auth
 // @Accept       json
 // @Produce      json
@@ -105,25 +119,33 @@ func (h *Handler) Login(c *fiber.Ctx) error {
 	if err := c.BodyParser(&in); err != nil {
 		return fiber.ErrBadRequest
 	}
+
+	// Normalize email
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
 
+	// Validate request
 	if errs, _ := validation.Validate(in); errs != nil {
 		return validation.Respond(c, errs)
 	}
 
+	// Find user by email
 	var u models.User
 	if err := h.db.Where("email = ?", in.Email).First(&u).Error; err != nil {
 		return fiber.ErrUnauthorized
 	}
+
+	// Verify password
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.Password)) != nil {
 		return fiber.ErrUnauthorized
 	}
 
+	// Issue JWT
 	token, _ := IssueToken(u.ID.String(), string(u.Role))
 	return c.JSON(AuthResponse{Token: token, Role: string(u.Role)})
 }
 
-// Me godoc
+/* ================================= Me =================================== */
+
 // @Summary      Get current user profile
 // @Description  Return full profile of the authenticated user
 // @Tags         auth
@@ -132,18 +154,19 @@ func (h *Handler) Login(c *fiber.Ctx) error {
 // @Success      200  {object}  models.User
 // @Failure      401  {object}  models.ErrorResponse
 // @Router       /me [get]
-
 func (h *Handler) Me(c *fiber.Ctx) error {
 	userID := c.Locals("userID")
 	if userID == nil {
 		return fiber.ErrUnauthorized
 	}
 
+	// Load user by ID from context (set by auth middleware)
 	var u models.User
 	if err := h.db.First(&u, "id = ?", userID).Error; err != nil {
 		return fiber.ErrUnauthorized
 	}
 
+	// Map to a stable public profile shape
 	resp := UserProfileResponse{
 		ID:           u.ID,
 		Email:        u.Email,
@@ -153,6 +176,5 @@ func (h *Handler) Me(c *fiber.Ctx) error {
 		BarNumber:    u.BarNumber,
 		CreatedAt:    u.CreatedAt,
 	}
-
 	return c.JSON(resp)
 }

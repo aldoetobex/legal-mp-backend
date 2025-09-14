@@ -335,7 +335,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Riwayat perubahan case (owner \u0026 accepted lawyer)",
+                "description": "List case status changes (owner \u0026 accepted lawyer only)",
                 "produces": [
                     "application/json"
                 ],
@@ -460,7 +460,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Client selects a quote → create a Stripe Checkout Session (server-side) using amount from DB",
+                "description": "Create a Stripe Checkout Session using amount from DB",
                 "produces": [
                     "application/json"
                 ],
@@ -597,7 +597,7 @@ const docTemplate = `{
         },
         "/login": {
             "post": {
-                "description": "Login dan dapatkan JWT",
+                "description": "Authenticate and receive a JWT",
                 "consumes": [
                     "application/json"
                 ],
@@ -698,9 +698,40 @@ const docTemplate = `{
                 }
             }
         },
+        "/me": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Return full profile of the authenticated user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Get current user profile",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.User"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/payments/mock/complete": {
             "post": {
-                "description": "Dev-only: finalize payment and set a single winner (atomic transaction)",
+                "description": "Dev-only: finalize payment and mark a single quote as accepted",
                 "consumes": [
                     "application/json"
                 ],
@@ -891,7 +922,7 @@ const docTemplate = `{
         },
         "/signup": {
             "post": {
-                "description": "Register user baru (client atau lawyer)",
+                "description": "Register a new user (client or lawyer)",
                 "consumes": [
                     "application/json"
                 ],
@@ -981,7 +1012,7 @@ const docTemplate = `{
                     "maxLength": 120
                 },
                 "jurisdiction": {
-                    "description": "Opsional khusus lawyer",
+                    "description": "Optional for lawyers",
                     "type": "string"
                 },
                 "name": {
@@ -1007,7 +1038,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "comment": {
-                    "description": "optional note shown in history",
+                    "description": "Optional comment shown in history",
                     "type": "string",
                     "maxLength": 500
                 }
@@ -1094,7 +1125,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "has_my_quote": {
-                    "description": "FE bisa dipakai untuk disable tombol submit",
+                    "description": "FE can use this to disable \"submit quote\"",
                     "type": "boolean"
                 },
                 "id": {
@@ -1173,16 +1204,59 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "code": {
+                    "description": "machine-friendly error code",
                     "type": "string",
                     "example": "FORBIDDEN"
                 },
                 "error": {
+                    "description": "always true for error cases",
                     "type": "boolean",
                     "example": true
                 },
                 "message": {
+                    "description": "human-readable error message",
                     "type": "string",
                     "example": "Forbidden"
+                }
+            }
+        },
+        "models.Role": {
+            "type": "string",
+            "enum": [
+                "client",
+                "lawyer"
+            ],
+            "x-enum-varnames": [
+                "RoleClient",
+                "RoleLawyer"
+            ]
+        },
+        "models.User": {
+            "type": "object",
+            "properties": {
+                "barNumber": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "jurisdiction": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "passwordHash": {
+                    "type": "string"
+                },
+                "role": {
+                    "$ref": "#/definitions/models.Role"
                 }
             }
         },
@@ -1190,6 +1264,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "errors": {
+                    "description": "field name -\u003e list of error messages",
                     "type": "object",
                     "additionalProperties": {
                         "type": "array",
@@ -1244,7 +1319,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "case_title": {
-                    "description": "\u003c—",
+                    "description": "from cases.title",
                     "type": "string"
                 },
                 "created_at": {

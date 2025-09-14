@@ -15,21 +15,27 @@ import (
 )
 
 const (
+	// Per-request upload limits
 	maxFilesPerRequest = 10
 	maxFileBytes       = 10 * 1024 * 1024 // 10 MB
 )
 
+// Allowed content types for uploads
 var allowedMIMEs = map[string]struct{}{
 	"application/pdf": {},
 	"image/png":       {},
 }
 
+// normalizeCT tries to determine a correct content type.
+// - Prefer the header value if provided.
+// - Fallback to file extension via mime.TypeByExtension.
+// - Fix common "application/octet-stream" cases by extension.
 func normalizeCT(fname, headerCT string) string {
 	ct := strings.TrimSpace(headerCT)
 	if ct == "" {
 		ct = mime.TypeByExtension(strings.ToLower(filepath.Ext(fname)))
 	}
-	// Some browsers send "application/octet-stream" for PDFs—try fix by extension.
+	// Some browsers send "application/octet-stream" for known types.
 	if ct == "application/octet-stream" {
 		ext := strings.ToLower(filepath.Ext(fname))
 		switch ext {
@@ -42,6 +48,8 @@ func normalizeCT(fname, headerCT string) string {
 	return ct
 }
 
+// canModifyFiles returns true if files can be added while the case is in
+// this status. (Open or Engaged)
 func canModifyFiles(st models.CaseStatus) bool {
 	switch st {
 	case models.CaseOpen, models.CaseEngaged:
@@ -51,6 +59,8 @@ func canModifyFiles(st models.CaseStatus) bool {
 	}
 }
 
+// canDeleteFiles returns true if files can be deleted while the case is in
+// this status. (Open or Cancelled)
 func canDeleteFiles(st models.CaseStatus) bool {
 	switch st {
 	case models.CaseOpen, models.CaseCancelled:
@@ -81,12 +91,12 @@ func (h *Handler) UploadFile(c *fiber.Ctx) error {
 	clientID := auth.MustUserID(c)
 	caseID := c.Params("id")
 
-	// Storage harus ada untuk upload
+	// Storage must be configured for uploads.
 	if h.sb == nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "storage not configured")
 	}
 
-	// Check case & ownership
+	// Check case existence and ownership.
 	var cs models.Case
 	if err := h.db.First(&cs, "id = ?", caseID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -101,13 +111,14 @@ func (h *Handler) UploadFile(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusForbidden, "Files cannot be modified on a closed or cancelled case")
 	}
 
+	// Parse multipart form input.
 	form, err := c.MultipartForm()
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "Multipart form required; send files[]")
 	}
 	files := form.File["files[]"]
 	if len(files) == 0 {
-		files = form.File["files"]
+		files = form.File["files"] // support both keys
 	}
 	if len(files) == 0 {
 		return fiber.NewError(fiber.StatusBadRequest, "No files provided (key: files[])")
@@ -124,7 +135,7 @@ func (h *Handler) UploadFile(c *fiber.Ctx) error {
 			"size": fh.Size,
 		}
 
-		// Basic checks
+		// Basic validations
 		if fh.Size <= 0 {
 			item["error"] = "Empty file"
 			results = append(results, item)
@@ -136,6 +147,7 @@ func (h *Handler) UploadFile(c *fiber.Ctx) error {
 			continue
 		}
 
+		// Content type check (with normalization/fallback)
 		ct := normalizeCT(fh.Filename, fh.Header.Get("Content-Type"))
 		if _, ok := allowedMIMEs[ct]; !ok {
 			item["error"] = "Only PDF or PNG are allowed"
@@ -143,6 +155,7 @@ func (h *Handler) UploadFile(c *fiber.Ctx) error {
 			continue
 		}
 
+		// Open the uploaded file stream
 		f, err := fh.Open()
 		if err != nil {
 			item["error"] = "Open failed"
@@ -151,15 +164,17 @@ func (h *Handler) UploadFile(c *fiber.Ctx) error {
 		}
 		defer f.Close()
 
-		// Unique object key per upload
+		// Create a unique object key per upload
 		key := h.sb.MakeObjectKey(caseID, fh.Filename)
 
+		// Upload to storage
 		if err := h.sb.Upload(key, f, ct, fh.Size); err != nil {
 			item["error"] = "Upload failed"
 			results = append(results, item)
 			continue
 		}
 
+		// Persist record in DB
 		rec := models.CaseFile{
 			CaseID:       cs.ID,
 			Key:          key,
@@ -169,7 +184,7 @@ func (h *Handler) UploadFile(c *fiber.Ctx) error {
 		}
 		if err := h.db.Create(&rec).Error; err != nil {
 			item["error"] = "Database error"
-			// Best-effort clean up the object
+			// Best-effort cleanup of the stored object
 			_ = h.sb.Delete(key)
 			results = append(results, item)
 			continue
@@ -202,6 +217,7 @@ func (h *Handler) SignedDownloadURL(c *fiber.Ctx) error {
 	role := auth.MustRole(c)
 	fileID := c.Params("fileID")
 
+	// Load file and its parent case
 	var cf models.CaseFile
 	if err := h.db.Preload("Case").First(&cf, "id = ?", fileID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -210,12 +226,13 @@ func (h *Handler) SignedDownloadURL(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
+	// Authorization rules:
+	// - Owner client always allowed.
+	// - Accepted lawyer allowed only when case is engaged or closed.
 	allowed := false
-	// Owner (client)
 	if role == string(models.RoleClient) && cf.Case.ClientID.String() == userID {
 		allowed = true
 	}
-	// Accepted lawyer on engaged/closed case
 	if role == string(models.RoleLawyer) &&
 		(cf.Case.Status == models.CaseEngaged || cf.Case.Status == models.CaseClosed) &&
 		cf.Case.AcceptedLawyerID.String() == userID {
@@ -225,7 +242,7 @@ func (h *Handler) SignedDownloadURL(c *fiber.Ctx) error {
 		return fiber.ErrForbidden
 	}
 
-	// Fallback untuk unit test: storage belum diinject
+	// Unit tests may not inject storage; return a dummy URL in that case.
 	if h.sb == nil {
 		return c.JSON(fiber.Map{
 			"url":        "https://example.com/test-signed-url",
@@ -234,6 +251,7 @@ func (h *Handler) SignedDownloadURL(c *fiber.Ctx) error {
 		})
 	}
 
+	// Generate a short-lived signed URL
 	url, err := h.sb.SignedURL(cf.Key, 60) // seconds
 	if err != nil {
 		return fiber.ErrInternalServerError
@@ -262,6 +280,7 @@ func (h *Handler) DeleteFile(c *fiber.Ctx) error {
 		return fiber.ErrForbidden
 	}
 
+	// Load file + case for checks
 	var cf models.CaseFile
 	if err := h.db.Preload("Case").First(&cf, "id = ?", c.Params("fileID")).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -270,20 +289,21 @@ func (h *Handler) DeleteFile(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Ownership + status
+	// Owner only
 	if cf.Case.ClientID.String() != userID {
 		return fiber.ErrForbidden
 	}
+	// Deletions allowed only when case is open/cancelled
 	if !canDeleteFiles(cf.Case.Status) {
 		return fiber.NewError(fiber.StatusForbidden, "Files cannot be deleted on a closed or engaged case")
 	}
 
-	// Delete from storage first (best-effort). Jika storage nil, skip.
+	// Best-effort delete from storage (skip if storage not configured)
 	if h.sb != nil {
-		_ = h.sb.Delete(cf.Key) // best-effort; ignore error
+		_ = h.sb.Delete(cf.Key) // ignore error
 	}
 
-	// Then delete the DB record
+	// Delete DB record
 	if err := h.db.Delete(&cf).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}

@@ -11,9 +11,18 @@ import (
 	"time"
 )
 
+/*
+Supabase wraps minimal calls to Supabase Storage REST API.
+
+Notes on authorization:
+- If you use a legacy service_role JWT, send both `apikey` and `Authorization: Bearer <token>`.
+- If you use a Secret API Key (sb_secret_...) that is NOT a JWT, some setups do NOT require the
+  Authorization header. In that case, remove the `Authorization` header lines below.
+*/
+
 type Supabase struct {
-	baseURL string // https://<project>.supabase.co
-	apiKey  string // service_role (legacy JWT) atau secret API key
+	baseURL string // e.g. https://<project>.supabase.co
+	apiKey  string // service_role JWT or secret API key
 	bucket  string
 	client  *http.Client
 }
@@ -27,12 +36,12 @@ func NewSupabase() *Supabase {
 	}
 }
 
-// MakeObjectKey: simpan dengan prefix case/<caseID> agar rapi
+// MakeObjectKey builds a tidy, per-case object key: case/<caseID>/<filename>
 func (s *Supabase) MakeObjectKey(caseID, filename string) string {
 	return path.Join("case", caseID, filename)
 }
 
-// Upload: POST /storage/v1/object/{bucket}/{objectName}
+// Upload sends a new object to: POST /storage/v1/object/{bucket}/{objectName}
 func (s *Supabase) Upload(key string, r io.Reader, contentType string, size int64) error {
 	url := fmt.Sprintf("%s/storage/v1/object/%s/%s", s.baseURL, s.bucket, key)
 
@@ -40,12 +49,9 @@ func (s *Supabase) Upload(key string, r io.Reader, contentType string, size int6
 	if err != nil {
 		return err
 	}
-	// Wajib:
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("apikey", s.apiKey)
-
-	// Jika s.apiKey adalah **legacy service_role (JWT)** → kirim Authorization.
-	// Jika Anda pakai Secret API Key (sb_secret_...) yang BUKAN JWT, HAPUS baris Authorization di bawah.
+	// See header note at the top of the file.
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 
 	res, err := s.client.Do(req)
@@ -61,7 +67,8 @@ func (s *Supabase) Upload(key string, r io.Reader, contentType string, size int6
 	return nil
 }
 
-// SignedURL: POST /storage/v1/object/sign/{bucket}/{objectName}  body: {"expiresIn": N}
+// SignedURL creates a short-lived signed URL:
+// POST /storage/v1/object/sign/{bucket}/{objectName}  body: {"expiresIn": <seconds>}
 func (s *Supabase) SignedURL(key string, expiresInSeconds int) (string, error) {
 	url := fmt.Sprintf("%s/storage/v1/object/sign/%s/%s", s.baseURL, s.bucket, key)
 
@@ -72,7 +79,7 @@ func (s *Supabase) SignedURL(key string, expiresInSeconds int) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("apikey", s.apiKey)
-	// Lihat catatan di atas soal Authorization:
+	// See header note at the top of the file.
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 
 	res, err := s.client.Do(req)
@@ -95,12 +102,14 @@ func (s *Supabase) SignedURL(key string, expiresInSeconds int) (string, error) {
 	if out.SignedURL == "" {
 		return "", fmt.Errorf("empty signedURL in response")
 	}
-	// API mengembalikan path relatif; jadikan absolute URL
+
+	// API returns a relative path; convert to absolute URL.
 	return s.baseURL + "/storage/v1" + out.SignedURL, nil
 }
 
-// Delete: DELETE /storage/v1/object/{bucket}/{objectName}
-// Idempotent: treat 404 as success (file already gone).
+// Delete removes an object by key:
+// DELETE /storage/v1/object/{bucket}/{objectName}
+// This is idempotent: 404 is treated as success (already deleted).
 func (s *Supabase) Delete(key string) error {
 	url := fmt.Sprintf("%s/storage/v1/object/%s/%s", s.baseURL, s.bucket, key)
 
@@ -109,8 +118,7 @@ func (s *Supabase) Delete(key string) error {
 		return err
 	}
 	req.Header.Set("apikey", s.apiKey)
-	// Jika apiKey-mu adalah legacy service_role (JWT), pakai Authorization.
-	// Jika pakai Secret API Key (sb_secret_...), hapus baris di bawah.
+	// See header note at the top of the file.
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 
 	res, err := s.client.Do(req)
@@ -119,7 +127,6 @@ func (s *Supabase) Delete(key string) error {
 	}
 	defer res.Body.Close()
 
-	// 404 -> dianggap ok (sudah tidak ada)
 	if res.StatusCode == http.StatusNotFound {
 		return nil
 	}
@@ -130,7 +137,8 @@ func (s *Supabase) Delete(key string) error {
 	return nil
 }
 
-// BulkDelete: POST /storage/v1/object/{bucket}/remove
+// BulkDelete removes multiple objects in one call:
+// POST /storage/v1/object/{bucket}/remove
 // Body: {"prefixes": ["case/<id>/file1.png", "case/<id>/file2.pdf", ...]}
 func (s *Supabase) BulkDelete(keys []string) error {
 	if len(keys) == 0 {
@@ -139,16 +147,14 @@ func (s *Supabase) BulkDelete(keys []string) error {
 
 	url := fmt.Sprintf("%s/storage/v1/object/%s/remove", s.baseURL, s.bucket)
 
-	body, _ := json.Marshal(map[string][]string{
-		"prefixes": keys,
-	})
+	body, _ := json.Marshal(map[string][]string{"prefixes": keys})
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("apikey", s.apiKey)
-	// Lihat catatan soal Authorization di atas.
+	// See header note at the top of the file.
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 
 	res, err := s.client.Do(req)
@@ -162,7 +168,6 @@ func (s *Supabase) BulkDelete(keys []string) error {
 		return fmt.Errorf("supabase bulk delete error: %s | %s", res.Status, string(b))
 	}
 
-	// Response biasanya berupa array hasil per prefix. Kita tidak perlu parse,
-	// karena error >300 sudah ditangani di atas.
+	// API usually returns an array of per-prefix results; errors are already handled above.
 	return nil
 }

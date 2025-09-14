@@ -21,7 +21,7 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/pkg/utils"
 )
 
-/* --------------------------------- types -------------------------------- */
+/* =============================== Types =================================== */
 
 type MockCompleteRequest struct {
 	PaymentID string `json:"payment_id"`
@@ -37,16 +37,16 @@ type Handler struct{ db *gorm.DB }
 
 func NewHandler(db *gorm.DB) *Handler { return &Handler{db: db} }
 
-/* =============================== MOCK FLOW ============================== */
+/* ============================== MOCK FLOW ================================= */
 
-// @Summary Create checkout (mock)
-// @Description Client selects a quote → create or reuse an initiated payment (mock provider)
-// @Tags payments
-// @Security BearerAuth
-// @Produce json
-// @Param quoteID path string true "quote id (uuid)"
-// @Success 201 {object} CheckoutResponse
-// @Router /checkout/{quoteID} [post]
+// @Summary      Create checkout (mock)
+// @Description  Create or reuse an initiated payment using the mock provider
+// @Tags         payments
+// @Security     BearerAuth
+// @Produce      json
+// @Param        quoteID  path  string  true  "quote id (uuid)"
+// @Success      201  {object}  CheckoutResponse
+// @Router       /checkout/{quoteID} [post]
 func (h *Handler) CreateCheckoutMock(c *fiber.Ctx) error {
 	quoteID := c.Params("quoteID")
 	if quoteID == "" {
@@ -70,7 +70,7 @@ func (h *Handler) CreateCheckoutMock(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// AuthZ & state
+	// Authorization & state checks
 	clientID := auth.MustUserID(c)
 	if cs.ClientID.String() != clientID {
 		return fiber.ErrForbidden
@@ -108,18 +108,18 @@ func (h *Handler) CreateCheckoutMock(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
-/* ============================== STRIPE FLOW ============================= */
+/* ============================== STRIPE FLOW =============================== */
 
-// @Summary Create checkout (Stripe)
-// @Description Client selects a quote → create a Stripe Checkout Session (server-side) using amount from DB
-// @Tags payments
-// @Security BearerAuth
-// @Produce json
-// @Param quoteID path string true "quote id (uuid)"
-// @Success 201 {object} CheckoutResponse
-// @Router /checkout/{quoteID} [post]
+// @Summary      Create checkout (Stripe)
+// @Description  Create a Stripe Checkout Session using amount from DB
+// @Tags         payments
+// @Security     BearerAuth
+// @Produce      json
+// @Param        quoteID  path  string  true  "quote id (uuid)"
+// @Success      201  {object}  CheckoutResponse
+// @Router       /checkout/{quoteID} [post]
 func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
-	// Use mock provider if configured
+	// Fallback to mock provider if configured
 	if os.Getenv("PAYMENT_PROVIDER") == "mock" {
 		return h.CreateCheckoutMock(c)
 	}
@@ -149,7 +149,7 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// AuthZ & state checks
+	// Authorization & state checks
 	if cs.ClientID.String() != clientID {
 		return fiber.ErrForbidden
 	}
@@ -178,11 +178,11 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "quote already paid")
 	}
 
-	// Success/cancel URLs
+	// Build success/cancel URLs
 	successURL := os.Getenv("PUBLIC_BASE_URL") + "/payments/success?pid=" + pay.ID.String()
 	cancelURL := os.Getenv("PUBLIC_BASE_URL") + "/payments/cancel?pid=" + pay.ID.String()
 
-	// Create checkout session
+	// Create Stripe Checkout Session
 	params := &stripe.CheckoutSessionParams{
 		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
 		SuccessURL:        stripe.String(successURL),
@@ -214,7 +214,7 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 		return fiber.NewError(http.StatusBadGateway, err.Error())
 	}
 
-	// Simpan session id sebagai POINTER (hindari "")
+	// Store the session id as a pointer (avoid empty string)
 	sid := sess.ID
 	if err := h.db.Model(&models.Payment{}).
 		Where("id = ?", pay.ID).
@@ -232,17 +232,18 @@ func (h *Handler) CreateCheckout(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
-/* ============================== MOCK COMPLETE ============================== */
+/* ============================ MOCK COMPLETE ============================== */
 
-// @Summary Complete payment (mock)
-// @Description Dev-only: finalize payment and set a single winner (atomic transaction)
-// @Tags payments
-// @Accept json
-// @Produce json
-// @Param payload body MockCompleteRequest true "Payment ID"
-// @Success 200 {object} map[string]any "ok"
-// @Router /payments/mock/complete [post]
+// @Summary      Complete payment (mock)
+// @Description  Dev-only: finalize payment and mark a single quote as accepted
+// @Tags         payments
+// @Accept       json
+// @Produce      json
+// @Param        payload  body  MockCompleteRequest  true  "Payment ID"
+// @Success      200  {object}  map[string]any  "ok"
+// @Router       /payments/mock/complete [post]
 func (h *Handler) MockComplete(c *fiber.Ctx) error {
+	// Only available in dev with mock provider
 	if os.Getenv("APP_ENV") != "dev" || os.Getenv("PAYMENT_PROVIDER") != "mock" {
 		return fiber.ErrNotFound
 	}
@@ -261,6 +262,7 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 
 	tx := h.db.Begin()
 
+	// Lock payment (idempotent)
 	var pay models.Payment
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		First(&pay, "id = ?", pid).Error; err != nil {
@@ -275,6 +277,7 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"ok": true, "message": "already paid (idempotent)"})
 	}
 
+	// Lock case, load quote
 	var cs models.Case
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		First(&cs, "id = ?", pay.CaseID).Error; err != nil {
@@ -287,11 +290,13 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
+	// Validate amount
 	if pay.AmountCents != q.AmountCents {
 		tx.Rollback()
 		return fiber.NewError(http.StatusConflict, "amount mismatch")
 	}
 
+	// Accept selected quote, reject the rest, move case → engaged
 	if cs.Status == models.CaseOpen {
 		if err := tx.Model(&models.Quote{}).Where("id = ?", q.ID).
 			Update("status", models.QuoteAccepted).Error; err != nil {
@@ -315,11 +320,12 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 			tx.Rollback()
 			return fiber.ErrInternalServerError
 		}
-		// Log history engaged
+		// History
 		utils.LogCaseHistory(c.Context(), tx, cs.ID, cs.ClientID,
 			"engaged", models.CaseOpen, models.CaseEngaged, "payment completed (mock)")
 	}
 
+	// Mark payment as paid
 	if err := tx.Model(&models.Payment{}).Where("id = ?", pay.ID).
 		Updates(map[string]any{
 			"status": models.PayPaid,
@@ -334,15 +340,15 @@ func (h *Handler) MockComplete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-/* ============================== STRIPE WEBHOOK ============================= */
+/* ============================ STRIPE WEBHOOK ============================== */
 
-// @Summary Stripe webhook endpoint
-// @Description Verify signature and finalize payment (checkout.session.completed)
-// @Tags payments
-// @Accept json
-// @Produce json
-// @Success 200 {string} string "ok"
-// @Router /payments/stripe/webhook [post]
+// @Summary      Stripe webhook endpoint
+// @Description  Verify signature and finalize payment (checkout.session.completed)
+// @Tags         payments
+// @Accept       json
+// @Produce      json
+// @Success      200  {string}  string  "ok"
+// @Router       /payments/stripe/webhook [post]
 func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 	payload := c.Body()
 	sig := c.Get("Stripe-Signature")
@@ -355,12 +361,13 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 
 	switch evt.Type {
 	case "checkout.session.completed":
+		// Parse checkout session
 		var s stripe.CheckoutSession
 		if err := json.Unmarshal(evt.Data.Raw, &s); err != nil {
 			return fiber.ErrBadRequest
 		}
 
-		// Ambil payment_id (ID payment internal kita) dari metadata / client_reference_id
+		// Resolve our Payment ID from metadata or client_reference_id
 		pidStr := ""
 		if s.Metadata != nil && s.Metadata["payment_id"] != "" {
 			pidStr = s.Metadata["payment_id"]
@@ -375,7 +382,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.NewError(http.StatusBadRequest, "invalid payment_id")
 		}
 
-		// Mulai transaksi
+		// Begin transaction
 		tx := h.db.Begin()
 
 		// Lock payment (idempotent safety)
@@ -393,7 +400,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return c.SendStatus(http.StatusOK)
 		}
 
-		// Simpan PaymentIntent LEBIH AWAL (sekali saja) lalu sinkronkan ke struct in-memory
+		// Persist PaymentIntent early if present; keep it in-memory for logging
 		if s.PaymentIntent != nil && s.PaymentIntent.ID != "" {
 			piID := s.PaymentIntent.ID
 			if pay.StripePaymentIntent == nil || *pay.StripePaymentIntent == "" {
@@ -406,11 +413,10 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 					return fiber.ErrInternalServerError
 				}
 			}
-			// sinkronkan agar langsung bisa dipakai untuk logging
 			pay.StripePaymentIntent = &piID
 		}
 
-		// Lock case & ambil quote
+		// Lock case & load quote
 		var cs models.Case
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			First(&cs, "id = ?", pay.CaseID).Error; err != nil {
@@ -423,13 +429,13 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.ErrInternalServerError
 		}
 
-		// Validasi jumlah
+		// Validate amount
 		if pay.AmountCents != q.AmountCents {
 			tx.Rollback()
 			return fiber.NewError(http.StatusConflict, "amount mismatch")
 		}
 
-		// Finalisasi: terima 1 quote, tolak lainnya, status case → engaged
+		// Accept the winning quote, reject the rest, move case → engaged
 		if cs.Status == models.CaseOpen {
 			if err := tx.Model(&models.Quote{}).Where("id = ?", q.ID).
 				Update("status", models.QuoteAccepted).Error; err != nil {
@@ -454,7 +460,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 				return fiber.ErrInternalServerError
 			}
 
-			// Build reason menggunakan stripe_payment_intent dari DB (tanpa call ke Stripe)
+			// Build reason using stripe_payment_intent (no extra Stripe API calls)
 			reason := "payment completed (stripe)"
 			if pay.StripePaymentIntent != nil && *pay.StripePaymentIntent != "" {
 				reason = fmt.Sprintf("payment completed (stripe: %s)", *pay.StripePaymentIntent)
@@ -471,7 +477,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			)
 		}
 
-		// Tandai payment sebagai PAID (tidak mengubah PI lagi)
+		// Mark payment as paid
 		if err := tx.Model(&models.Payment{}).Where("id = ?", pay.ID).
 			Updates(map[string]any{
 				"status": models.PayPaid,
@@ -486,6 +492,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 
 	default:
+		// Unhandled event types are acknowledged to Stripe
 		return c.SendStatus(http.StatusOK)
 	}
 }

@@ -11,25 +11,18 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+/* ============================== JWT Claims ============================== */
+
+// Claims represents the JWT payload we issue and expect.
 type Claims struct {
-	Sub  string `json:"sub"`
-	Role string `json:"role"`
+	Sub  string `json:"sub"`  // user ID
+	Role string `json:"role"` // user role: "client" | "lawyer"
 	jwt.RegisteredClaims
 }
 
-// func ErrorHandler(c *fiber.Ctx, err error) error {
-// 	if fe, ok := err.(*fiber.Error); ok {
-// 		return c.Status(fe.Code).JSON(models.ErrorResponse{
-// 			Error:   true,
-// 			Message: fe.Message,
-// 		})
-// 	}
-// 	return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
-// 		Error:   true,
-// 		Message: "Internal Server Error",
-// 	})
-// }
+/* ============================== JWT Helpers ============================= */
 
+// IssueToken signs a short-lived JWT (default 7 days) for the given user and role.
 func IssueToken(userID, role string) (string, error) {
 	claims := &Claims{
 		Sub:  userID,
@@ -43,6 +36,9 @@ func IssueToken(userID, role string) (string, error) {
 	return t.SignedString([]byte(os.Getenv("JWT_SECRET")))
 }
 
+/* ============================== Middleware ============================== */
+
+// RequireAuth validates a Bearer JWT and injects userID and role into the context.
 func RequireAuth() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		h := c.Get("Authorization")
@@ -50,22 +46,26 @@ func RequireAuth() fiber.Handler {
 			return fiber.ErrUnauthorized
 		}
 		tokenStr := strings.TrimPrefix(h, "Bearer ")
+
 		token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (any, error) {
 			return []byte(os.Getenv("JWT_SECRET")), nil
 		})
 		if err != nil || !token.Valid {
 			return fiber.ErrUnauthorized
 		}
+
 		claims, ok := token.Claims.(*Claims)
 		if !ok {
 			return fiber.ErrUnauthorized
 		}
+
 		c.Locals("userID", claims.Sub)
 		c.Locals("role", claims.Role)
 		return c.Next()
 	}
 }
 
+// MustUserID reads the authenticated user ID from context or panics (programming error).
 func MustUserID(c *fiber.Ctx) string {
 	if v := c.Locals("userID"); v != nil {
 		return v.(string)
@@ -73,6 +73,7 @@ func MustUserID(c *fiber.Ctx) string {
 	panic(errors.New("user not in context"))
 }
 
+// MustRole reads the authenticated user role from context or panics (programming error).
 func MustRole(c *fiber.Ctx) string {
 	if v := c.Locals("role"); v != nil {
 		return v.(string)
@@ -80,6 +81,7 @@ func MustRole(c *fiber.Ctx) string {
 	panic(errors.New("role not in context"))
 }
 
+// RequireRole ensures the authenticated user has the expected role.
 func RequireRole(role string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if MustRole(c) != role {
@@ -89,6 +91,9 @@ func RequireRole(role string) fiber.Handler {
 	}
 }
 
+/* =========================== Error Formatting =========================== */
+
+// httpCodeToString converts an HTTP status code to a short, stable string.
 func httpCodeToString(code int) string {
 	switch code {
 	case fiber.StatusBadRequest:
@@ -110,18 +115,19 @@ func httpCodeToString(code int) string {
 	}
 }
 
-// ErrorHandler is a global Fiber error handler to return a consistent JSON shape.
+// ErrorHandler is a global Fiber error handler that returns a consistent JSON shape.
 func ErrorHandler(c *fiber.Ctx, err error) error {
-	// default values
+	// Defaults
 	code := fiber.StatusInternalServerError
 	msg := "Internal Server Error"
 
-	// Fiber errors keep status code
+	// Fiber errors carry status codes
 	if e, ok := err.(*fiber.Error); ok {
 		code = e.Code
 		if strings.TrimSpace(e.Message) != "" {
 			msg = e.Message
 		} else {
+			// Use Fiber's default messages per status code
 			msg = fiber.ErrInternalServerError.Message
 			switch code {
 			case fiber.StatusBadRequest:

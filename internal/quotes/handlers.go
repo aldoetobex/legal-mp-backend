@@ -18,7 +18,7 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/pkg/validation"
 )
 
-// ===== DTOs =====
+/* =============================== DTOs ==================================== */
 
 type UpsertQuoteRequest struct {
 	CaseID      string `json:"case_id" validate:"required,uuid4"`
@@ -27,11 +27,11 @@ type UpsertQuoteRequest struct {
 	Note        string `json:"note" validate:"omitempty,max=500"`
 }
 
-// Tambah metadata kasus agar FE bisa tampilkan nama dengan benar
+// Returned to the lawyer in /quotes/mine (includes case metadata for FE display)
 type MyQuoteItem struct {
 	ID           string `json:"id"`
 	CaseID       string `json:"case_id"`
-	CaseTitle    string `json:"case_title"`    // <—
+	CaseTitle    string `json:"case_title"`    // from cases.title
 	CaseCategory string `json:"case_category"` // optional
 	CaseStatus   string `json:"case_status"`   // optional
 	AmountCents  int    `json:"amount_cents"`
@@ -49,12 +49,17 @@ type PageMyQuotes struct {
 	Items    []MyQuoteItem `json:"items"`
 }
 
+/* ============================== Handler =================================== */
+
 type Handler struct {
 	db *gorm.DB
 }
 
 func NewHandler(db *gorm.DB) *Handler { return &Handler{db: db} }
 
+/* ============================== Helpers =================================== */
+
+// parsePage reads ?page and ?pageSize with sane bounds (1..50)
 func parsePage(c *fiber.Ctx) (page, size int) {
 	page, _ = strconv.Atoi(c.Query("page", "1"))
 	size, _ = strconv.Atoi(c.Query("pageSize", "10"))
@@ -67,11 +72,8 @@ func parsePage(c *fiber.Ctx) (page, size int) {
 	return
 }
 
-// =====================================
-// POST /api/quotes (lawyer) — Upsert
-// =====================================
+/* ============================ Upsert Quote ================================ */
 
-// Upsert Quote godoc
 // @Summary      Submit or update a quote (1 active per case per lawyer)
 // @Description  Lawyer creates or updates a quote while the case is still OPEN
 // @Tags         quotes
@@ -86,15 +88,14 @@ func parsePage(c *fiber.Ctx) (page, size int) {
 // @Failure      409  {object}  models.ErrorResponse  "immutable or case not open"
 // @Failure      500  {object}  models.ErrorResponse
 // @Router       /quotes [post]
-// quotes/handlers.go
 func (h *Handler) Upsert(c *fiber.Ctx) error {
 	lawyerIDStr := auth.MustUserID(c)
 
+	// Parse & validate payload
 	var in UpsertQuoteRequest
 	if err := c.BodyParser(&in); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid json")
 	}
-	// input validation
 	if errs, _ := validation.Validate(in); errs != nil {
 		return validation.Respond(c, errs)
 	}
@@ -105,7 +106,7 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 	}
 	lawyerID := uuid.MustParse(lawyerIDStr)
 
-	// ---- Early check: ada & harus OPEN (tanpa TX supaya error clear & cepat) ----
+	// Quick pre-check: case must exist and be OPEN (no transaction yet)
 	var cs models.Case
 	if err := h.db.First(&cs, "id = ?", caseID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -117,7 +118,7 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "case is not open")
 	}
 
-	// ---- TX + row lock untuk hindari race dengan accept/close ----
+	// Start TX and lock the case row to avoid races against accept/close
 	tx := h.db.Begin()
 	if tx.Error != nil {
 		return fiber.ErrInternalServerError
@@ -129,7 +130,7 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 		}
 	}()
 
-	// Lock ulang baris case (defensive bila status bisa berubah saat race)
+	// Re-fetch & lock case defensively
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		First(&cs, "id = ?", caseID).Error; err != nil {
 		_ = tx.Rollback()
@@ -143,13 +144,14 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "case is not open")
 	}
 
-	// Satu quote aktif per (case_id, lawyer_id): insert baru atau update kalau masih PROPOSED
+	// Enforce single active quote per (case_id, lawyer_id).
+	// Create new or update only if the current one is still PROPOSED.
 	var q models.Quote
 	err = tx.Where("case_id = ? AND lawyer_id = ?", caseID, lawyerID).First(&q).Error
 
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		// INSERT baru
+		// Insert a new proposed quote
 		q = models.Quote{
 			CaseID:      caseID,
 			LawyerID:    lawyerID,
@@ -166,18 +168,17 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 		}
 
 	case err == nil:
-		// Hanya boleh update kalau masih proposed
+		// Allow updates only when the quote is still PROPOSED
 		if q.Status != models.QuoteProposed {
 			_ = tx.Rollback()
 			return fiber.NewError(fiber.StatusConflict, "quote is immutable (already accepted/rejected)")
 		}
-
-		// ❗ Cek kepemilikan quote
+		// Extra safety: ensure ownership
 		if q.LawyerID != lawyerID {
 			_ = tx.Rollback()
 			return fiber.ErrForbidden
 		}
-
+		// Apply updates
 		if err := tx.Model(&q).Updates(map[string]any{
 			"amount_cents": in.AmountCents,
 			"days":         in.Days,
@@ -206,7 +207,8 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 	})
 }
 
-// List My Quotes godoc
+/* ============================= List Mine ================================== */
+
 // @Summary      List my quotes
 // @Description  Lawyer lists their quotes (filter by status, with pagination). Includes case title.
 // @Tags         quotes
@@ -227,6 +229,7 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 
 	base := h.db.Table("quotes").Where("quotes.lawyer_id = ?", lawyerID)
 
+	// Optional status filter
 	if status != "" {
 		switch status {
 		case string(models.QuoteProposed), string(models.QuoteAccepted), string(models.QuoteRejected):
@@ -236,11 +239,13 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		}
 	}
 
+	// Count before pagination
 	var total int64
 	if err := base.Count(&total).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
 
+	// Select quotes + case metadata (title/category/status)
 	rows := make([]MyQuoteItem, 0, size)
 	if err := base.
 		Select(`
@@ -272,10 +277,9 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	})
 }
 
-// ============================================================
-// GET /api/cases/:id/quotes  (client owner views all quotes)
-// ============================================================
+/* ===================== Client: Quotes by Case (owner) ===================== */
 
+// For owner view: list all quotes under a case
 type caseQuoteItem struct {
 	ID          uuid.UUID `json:"id"`
 	LawyerID    uuid.UUID `json:"lawyer_id"`
@@ -287,7 +291,6 @@ type caseQuoteItem struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// Quotes by Case godoc
 // @Summary      Quotes by case (owner)
 // @Description  Client owner sees all quotes for their case (paginated)
 // @Tags         quotes
@@ -302,7 +305,6 @@ type caseQuoteItem struct {
 // @Failure      403  {object}  models.ErrorResponse
 // @Failure      500  {object}  models.ErrorResponse
 // @Router       /cases/{id}/quotes [get]
-// Quotes by Case godoc
 func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 	clientID := auth.MustUserID(c)
 	caseID := c.Params("id")
@@ -310,7 +312,7 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid case id")
 	}
 
-	// Ambil status case + verifikasi kepemilikan
+	// Load case ownership + status + accepted quote
 	var cs struct {
 		ID              uuid.UUID
 		ClientID        uuid.UUID
@@ -333,7 +335,7 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 
 	page, size := parsePage(c)
 
-	// Query semua quotes untuk case ini (tetap ditampilkan semua)
+	// Fetch quotes for this case (all statuses)
 	q := h.db.Model(&models.Quote{}).Where("case_id = ?", cs.ID)
 
 	var total int64
@@ -350,15 +352,15 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// 🔒 Redact logic
+	// Redaction rules for the owner:
+	// - OPEN or CANCELLED → redact all notes
+	// - ENGAGED or CLOSED → show accepted note in full; redact the rest
 	switch cs.Status {
 	case models.CaseOpen, models.CaseCancelled:
-		// Semua note disensor
 		for i := range rows {
 			rows[i].Note = sanitize.RedactPII(rows[i].Note)
 		}
 	case models.CaseEngaged, models.CaseClosed:
-		// Hanya accepted_quote_id yang boleh utuh
 		for i := range rows {
 			if rows[i].ID != cs.AcceptedQuoteID {
 				rows[i].Note = sanitize.RedactPII(rows[i].Note)

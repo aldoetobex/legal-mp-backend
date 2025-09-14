@@ -12,15 +12,16 @@ import (
 var (
 	v *validator.Validate
 
-	// Bar number: 3–40 chars, alphanumerics plus space, dash, slash.
-	reBarNum       = regexp.MustCompile(`^[A-Za-z0-9 /-]{3,40}$`)
-	reJurisdiction = regexp.MustCompile(`^[A-Z]{2}$`) // ISO-3166 alpha-2, e.g. SG
+	// Bar number: 3–40 chars; allow letters, digits, space, dash, slash.
+	reBarNum = regexp.MustCompile(`^[A-Za-z0-9 /-]{3,40}$`)
+	// Jurisdiction: ISO-3166 alpha-2 (e.g., "SG").
+	reJurisdiction = regexp.MustCompile(`^[A-Z]{2}$`)
 )
 
 func init() {
 	v = validator.New()
 
-	// Use JSON tag as the field name in error output
+	// Use the JSON tag as the field name in error messages.
 	v.RegisterTagNameFunc(func(fld reflect.StructField) string {
 		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
 		if name == "" || name == "-" {
@@ -29,16 +30,16 @@ func init() {
 		return name
 	})
 
-	// Custom: bar number
+	// Custom rule: bar number format (allows empty via `omitempty`).
 	_ = v.RegisterValidation("barnum", func(fl validator.FieldLevel) bool {
 		val := strings.TrimSpace(fl.Field().String())
-		if val == "" { // let omitempty handle empty
+		if val == "" {
 			return true
 		}
 		return reBarNum.MatchString(val)
 	})
 
-	// Custom: jurisdiction code
+	// Custom rule: jurisdiction code (allows empty via `omitempty`).
 	_ = v.RegisterValidation("jurisdiction", func(fl validator.FieldLevel) bool {
 		val := strings.TrimSpace(strings.ToUpper(fl.Field().String()))
 		if val == "" {
@@ -48,13 +49,15 @@ func init() {
 	})
 }
 
-// Validate returns map[field][]messages (Laravel-like)
+// Validate runs struct validation and returns Laravel-like errors:
+// map[field][]messages. Returns (nil, nil) when valid.
 func Validate(s any) (map[string][]string, error) {
 	if err := v.Struct(s); err != nil {
 		ve, ok := err.(validator.ValidationErrors)
 		if !ok {
 			return nil, err
 		}
+
 		out := make(map[string][]string)
 		for _, e := range ve {
 			field := e.Field() // already mapped from json tag
@@ -67,7 +70,7 @@ func Validate(s any) (map[string][]string, error) {
 				out[field] = append(out[field], "Invalid email format")
 
 			case "min":
-				// Show a string-specific message when the field is a string
+				// String vs numeric messaging
 				if e.Kind() == reflect.String {
 					out[field] = append(out[field], fmt.Sprintf("Must be at least %s characters", e.Param()))
 				} else {
@@ -105,14 +108,16 @@ func Validate(s any) (map[string][]string, error) {
 				out[field] = append(out[field], "Invalid bar number format")
 
 			case "jurisdiction":
-				out[field] = append(out[field], "Invalid jurisdiction code (use ISO-3166 alpha-2, e.g. “SG”)")
+				out[field] = append(out[field], "Invalid jurisdiction code (use ISO-3166 alpha-2, e.g., \"SG\")")
 
 			default:
-				// Fallback to original error text if we missed a tag
+				// Fallback to the original validation error string.
 				out[field] = append(out[field], e.Error())
 			}
 		}
 		return out, nil
 	}
+
+	// No validation errors.
 	return nil, nil
 }

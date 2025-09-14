@@ -1,41 +1,51 @@
-# Legal Marketplace (Mini)
+# ⚖️ Legal Marketplace - Backend (Go + Fiber)
 
-A small two‑sided app where **Clients** post legal cases (with attachments) and **Lawyers** browse anonymized listings and submit one quote per case. The **Client** accepts and pays; only the **accepted Lawyer** can access the full case and files.
+A small backend service for a legal two-sided marketplace:
+
+-   **Clients** post legal cases (with attachments).\
+-   **Lawyers** browse anonymized listings and submit **one quote per
+    case**.\
+-   **Client** accepts a quote and pays.\
+-   Only the **accepted Lawyer** can access the full case and files.
 
 > 📄 See: [How it Works](HOW_IT_WORKS.md) • [ERD](ERD.md)
 
----
+------------------------------------------------------------------------
 
-## 🚀 Deployed URL
+## 🚀 Deployed URL (demo)
 
-- **Web:** https://legal-mp-frontend.vercel.app
-- **Api:** https://legal-mp-backend-production.up.railway.app/api
-- **Swagger:** https://legal-mp-backend-production.up.railway.app/swagger
+-   **API:** https://legal-mp-backend-production.up.railway.app/api\
+-   **Swagger docs:**
+    https://legal-mp-backend-production.up.railway.app/swagger
 
----
+------------------------------------------------------------------------
 
-## 🧰 Tech Stack (suggested)
+## 🧰 Tech Stack
 
-- **Backend:** Go + Fiber, GORM (PostgreSQL)
-- **DB:** PostgreSQL
-- **Object Storage:** Supabase (S3‑like), signed URLs
-- **Payments:** Stripe (test mode)
-- **Frontend:** Next.js/React (pages for Client & Lawyer)
-- **Auth:** simple bearer/JWT (server reads user id/role from context in this repo’s tests)
+-   **Language:** Go 1.22+\
+-   **Framework:** Fiber\
+-   **ORM:** GORM (PostgreSQL)\
+-   **Database:** PostgreSQL (optimized for Supabase)\
+-   **Storage:** Supabase (S3-like, signed URLs)\
+-   **Payments:** Stripe (test mode)\
+-   **Auth:** JWT / Bearer token (simulated in tests)\
+-   **Deployment:** Railway (backend), Supabase (database + storage)
 
----
+------------------------------------------------------------------------
 
-## ⚙️ Environment (.env)
+## ⚙️ Environment Variables
 
-Create a `.env` from the example below or use the provided **[.env.example](.env.example)** file.
+Create a `.env` file based on **[.env.example](.env.example)**.
 
-```bash
+Example:
+
+``` bash
 APP_ENV=dev
 PORT=3001
 
 PAYMENT_PROVIDER=stripe
 
-STRIPE_CURRENCY=sgd   # atau sgd
+STRIPE_CURRENCY=sgd
 PUBLIC_BASE_URL=http://localhost:3000
 
 # Core
@@ -56,85 +66,106 @@ STRIPE_SECRET_KEY=sk_test_xxx
 STRIPE_WEBHOOK_SECRET=whsec_xxx
 ```
 
-> For local dev, you can point `DATABASE_URL` to a Docker Postgres and run the API on `:8080`.
+------------------------------------------------------------------------
 
----
+## 👩‍💻 Prerequisites
 
-## 👤 Example Accounts (seed / for demo)
+1.  **Install Go**\
+    Make sure you have Go 1.22 or newer:
 
-- **Client:** `client1@example.com` / `Passw0rd!`
-- **Lawyer:** `lawyer1@example.com` / `Passw0rd!`
+    ``` bash
+    go version
+    ```
 
-(Adjust to your seed data. In tests, we generate random emails per run.)
+    If not installed, download from <https://go.dev/dl>.
 
----
+2.  **Install PostgreSQL**\
+    Ensure Postgres is running locally or via Docker.
 
-## 🧪 Tests (what we cover)
+    -   One DB for app (`DATABASE_URL`)\
+    -   One DB for tests (`TEST_DATABASE_URL`)
 
-This repo includes **unit/integration tests** against a real Postgres (using `TEST_DATABASE_URL`) to verify the critical logic and security gates.
+3.  **Stripe account (test mode)** if you want to test payments.
 
-- **Cases**
-  - Client case detail:
-    - Redacts PII in quote notes while case is **OPEN**
-    - Shows original quote notes when **ENGAGED**
-  - File-list response **masks original filenames** with SHA‑1 (extension preserved)
-  - `GET /cases/mine` pagination + **quote counts** per case
-  - Signed URL access:
-    - Client owner ✅
-    - Lawyer only if **engaged & accepted** ✅
-    - Random user ❌
-  - Marketplace (lawyer view):
-    - **Redacted** description previews
-    - `created_since` filter (Asia/Singapore) + pagination
-- **Quotes**
-  - Upsert (one active quote per lawyer per case)
-  - Cannot quote a **non‑OPEN** case (409/403)
-  - Re‑submitting updates your own quote; others’ quotes untouched
+------------------------------------------------------------------------
 
-> See **[How it Works](HOW_IT_WORKS.md)** for the security model and **[ERD](ERD.md)** for the schema.
+## ▶️ How to Run
 
-Run tests:
+1.  **Clone the repo**
 
-```bash
-export TEST_DATABASE_URL='postgres://user:pass@localhost:5432/legalmp_test?sslmode=disable'
-go test ./internal/... -v
-```
+    ``` bash
+    git clone https://github.com/aldoetobex/legal-mp-backend.git
+    cd legal-mp-backend
+    ```
 
----
+2.  **Setup environment**
 
-## 📝 How to Run (quickstart)
+    ``` bash
+    cp .env.example .env
+    # edit .env with your Postgres, Stripe, Supabase credentials
+    ```
 
-1. **Prepare Postgres** (two DBs suggested: app & test)
-2. Copy **`.env.example` → `.env`** and fill values
-3. **Run API** (example):
-   ```bash
-   go run ./cmd/server
-   ```
-4. **Run frontend** (Next.js):
-   ```bash
-   pnpm dev
-   ```
-5. Visit the deployed URL or `http://localhost:3000`
+3.  **Install dependencies**
 
----
+    ``` bash
+    go mod tidy
+    ```
 
-## 🧭 Project Structure (high‑level)
+4.  **Run the server**
 
-```
-internal/
-  cases/     # case handlers: create/list/detail, marketplace, files (upload/signed URL)
-  quotes/    # quote upsert & list mine
-  auth/      # auth helpers (user id/role from context)
-  storage/   # Supabase wrapper for object storage
-pkg/
-  models/    # GORM models & enums
-  sanitize/  # redaction helpers (emails/phones)
-  validation/# request validation
-```
+    ``` bash
+    go run ./cmd/server
+    ```
 
----
+    By default the API runs on <http://localhost:3001>.
+
+------------------------------------------------------------------------
+
+## 🧪 Run Tests
+
+This project includes **unit & integration tests** (using
+`TEST_DATABASE_URL`).
+
+1.  Ensure your **test database** exists.\
+
+2.  Run tests with:
+
+    ``` bash
+    export TEST_DATABASE_URL='postgres://user:pass@localhost:5432/legalmp_test?sslmode=disable'
+    go test ./internal/... -v
+    ```
+
+------------------------------------------------------------------------
+
+## 🧭 Project Structure
+
+    cmd/
+      server/         # Entry point for API server
+    internal/
+      cases/          # Case handlers (create, list, detail, file upload)
+      quotes/         # Quote upsert & listing
+      payments/       # Stripe & mock payment flow
+      auth/           # JWT / auth helpers
+      storage/        # Supabase wrapper (signed URLs, upload, delete)
+    pkg/
+      models/         # GORM models & enums
+      sanitize/       # Redaction helpers (emails, phones)
+      validation/     # Request validation helpers
+      utils/          # Shared utilities (logging, case history)
+
+------------------------------------------------------------------------
+
+## 👤 Example Accounts (for demo)
+
+-   **Client:** `client1@example.com` / `Passw0rd!`\
+-   **Lawyer:** `lawyer1@example.com` / `Passw0rd!`
+
+*(adjust to your seed data; in tests, random users are generated
+automatically).*
+
+------------------------------------------------------------------------
 
 ## 📚 More
 
-- **How it works:** [HOW_IT_WORKS.md](HOW_IT_WORKS.md)
-- **Data model (ERD):** [ERD.md](ERD.md)
+-   **How it works:** [HOW_IT_WORKS.md](HOW_IT_WORKS.md)\
+-   **Database ERD:** [ERD.md](ERD.md)

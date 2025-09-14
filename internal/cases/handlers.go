@@ -22,7 +22,7 @@ import (
 	"github.com/aldoetobex/legal-mp-backend/pkg/validation"
 )
 
-// ===== DTOs =====
+/* =============================== DTOs ==================================== */
 
 type CreateCaseRequest struct {
 	Title       string `json:"title" validate:"required,min=3,max=120"`
@@ -31,7 +31,8 @@ type CreateCaseRequest struct {
 }
 
 type ActionRequest struct {
-	Comment string `json:"comment" validate:"max=500"` // optional note shown in history
+	// Optional comment shown in history
+	Comment string `json:"comment" validate:"max=500"`
 }
 
 type CaseListItem struct {
@@ -51,7 +52,8 @@ type PageCases struct {
 	Items    []CaseListItem `json:"items"`
 }
 
-// ====== History DTO ======
+// ---- History DTO
+
 type CaseHistoryDTO struct {
 	ID        uuid.UUID         `json:"id"`
 	Action    string            `json:"action"`
@@ -62,6 +64,8 @@ type CaseHistoryDTO struct {
 	CreatedAt time.Time         `json:"created_at"`
 }
 
+/* ============================== Handler ================================== */
+
 type Handler struct {
 	db *gorm.DB
 	sb *storage.Supabase
@@ -71,7 +75,8 @@ func NewHandler(db *gorm.DB, sb *storage.Supabase) *Handler {
 	return &Handler{db: db, sb: sb}
 }
 
-// Create Case godoc
+/* ============================ Create Case ================================ */
+
 // @Summary      Create case
 // @Description  Client creates a new case
 // @Tags         cases
@@ -88,7 +93,7 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&in); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid json")
 	}
-	// Validation (Laravel-style response)
+	// Laravel-style validation response
 	if errs, _ := validation.Validate(in); errs != nil {
 		return validation.Respond(c, errs)
 	}
@@ -105,12 +110,15 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Log: created
+	// History: created
 	utils.LogCaseHistory(c.Context(), h.db, cs.ID, clientUUID, "created", "", models.CaseOpen, "case created")
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": cs.ID})
 }
 
+/* ========================= Pagination Helper ============================= */
+
+// parsePage reads pagination params with sane defaults and bounds.
 func parsePage(c *fiber.Ctx) (page, size int) {
 	page, _ = strconv.Atoi(c.Query("page", "1"))
 	size, _ = strconv.Atoi(c.Query("pageSize", "10"))
@@ -132,7 +140,8 @@ type caseWithCounts struct {
 	Quotes    int64     `json:"quotes"`
 }
 
-// List My Cases godoc
+/* ============================ List My Cases ============================== */
+
 // @Summary      List my cases
 // @Description  Client lists their own cases (paginated)
 // @Tags         cases
@@ -147,7 +156,7 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	clientID := auth.MustUserID(c)
 	page, size := parsePage(c)
 
-	// Total count
+	// Count for pagination
 	var total int64
 	if err := h.db.Model(&models.Case{}).
 		Where("client_id = ?", clientID).
@@ -155,7 +164,7 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Data + quotes count
+	// Page data + quote counts (LEFT JOIN + GROUP BY)
 	rows := make([]caseWithCounts, 0, size)
 	if err := h.db.
 		Table("cases").
@@ -169,12 +178,11 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		Scan(&rows).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
-
 	if rows == nil {
 		rows = []caseWithCounts{}
 	}
 
-	// Map ke DTO stabil
+	// Map to stable DTO
 	items := make([]CaseListItem, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, CaseListItem{
@@ -192,11 +200,12 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		"pageSize": size,
 		"total":    total,
 		"pages":    int(math.Ceil(float64(total) / float64(size))),
-		"items":    items, // selalu [] saat kosong
+		"items":    items, // always [] when empty
 	})
 }
 
-// ====== DTO untuk counterpart & detail ======
+/* ===================== Public Counterpart Profiles ======================= */
+
 type PublicUser struct {
 	ID           uuid.UUID `json:"id"`
 	Name         string    `json:"name,omitempty"`
@@ -211,7 +220,8 @@ type CaseDetailResponse struct {
 	Client         *PublicUser `json:"client,omitempty"`
 }
 
-// ambil profil publik user
+// fetchPublicUser returns a minimal public profile.
+// If withLawyerFields is true, include lawyer-only fields.
 func (h *Handler) fetchPublicUser(uID uuid.UUID, withLawyerFields bool) *PublicUser {
 	if uID == uuid.Nil {
 		return nil
@@ -239,9 +249,10 @@ func (h *Handler) fetchPublicUser(uID uuid.UUID, withLawyerFields bool) *PublicU
 	}
 }
 
-// GetDetail godoc
+/* ============================== Get Detail =============================== */
+
 // @Summary      Case detail (owner or accepted lawyer)
-// @Description  Client owner atau lawyer yang diterima (engaged/closed) dapat melihat detail & files + counterpart
+// @Description  Client owner or accepted lawyer (engaged/closed) can view details, files, and counterpart
 // @Tags         cases
 // @Security     BearerAuth
 // @Produce      json
@@ -252,7 +263,7 @@ func (h *Handler) fetchPublicUser(uID uuid.UUID, withLawyerFields bool) *PublicU
 // @Failure      404  {object}  models.ErrorResponse
 // @Router       /cases/{id} [get]
 
-// helper to hash filename for display
+// maskFileName returns a SHA1-based filename while keeping the extension.
 func maskFileName(original string) string {
 	ext := filepath.Ext(original)
 	sum := sha1.Sum([]byte(original))
@@ -264,6 +275,7 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 	userID := auth.MustUserID(c)
 	role, _ := c.Locals("role").(string)
 
+	// Load case with files (ASC) and quotes (DESC)
 	var cs models.Case
 	if err := h.db.
 		Preload("Files", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
@@ -275,6 +287,7 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
+	// Normalize empties
 	if cs.Files == nil {
 		cs.Files = []models.CaseFile{}
 	}
@@ -282,7 +295,7 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		cs.Quotes = []models.Quote{}
 	}
 
-	// 🔒 Mask filenames in the response
+	// Mask filenames in API output
 	safeFiles := make([]models.CaseFile, len(cs.Files))
 	for i, f := range cs.Files {
 		f.OriginalName = maskFileName(f.OriginalName)
@@ -292,12 +305,14 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 
 	switch role {
 	case string(models.RoleClient):
+		// Only owner client
 		if cs.ClientID.String() != userID {
 			return fiber.ErrForbidden
 		}
 
-		// - OPEN: semua note disensor
-		// - ENGAGED/CLOSED: note dari acceptedQuote tampil apa adanya, sisanya disensor
+		// Redaction policy:
+		// - OPEN: redact all notes
+		// - ENGAGED/CLOSED: show note for accepted quote; redact others
 		if len(cs.Quotes) > 0 {
 			safeQuotes := make([]models.Quote, len(cs.Quotes))
 			switch cs.Status {
@@ -309,12 +324,11 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 			case models.CaseEngaged, models.CaseClosed:
 				for i, q := range cs.Quotes {
 					if q.ID != cs.AcceptedQuoteID {
-						q.Note = sanitize.RedactPII(q.Note) // atau kosongkan: q.Note = ""
+						q.Note = sanitize.RedactPII(q.Note)
 					}
 					safeQuotes[i] = q
 				}
 			default:
-				// fallback konservatif: sensor semua
 				for i, q := range cs.Quotes {
 					q.Note = sanitize.RedactPII(q.Note)
 					safeQuotes[i] = q
@@ -330,10 +344,12 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		return c.JSON(resp)
 
 	case string(models.RoleLawyer):
+		// Only accepted lawyer, and only when engaged/closed
 		if (cs.Status != models.CaseEngaged && cs.Status != models.CaseClosed) || cs.AcceptedLawyerID.String() != userID {
 			return fiber.ErrForbidden
 		}
 
+		// For lawyers, only return the accepted quote when present
 		if cs.AcceptedQuoteID != uuid.Nil {
 			var q models.Quote
 			if err := h.db.First(&q, "id = ?", cs.AcceptedQuoteID).Error; err == nil {
@@ -356,16 +372,16 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 	}
 }
 
-// ====== Marketplace (anonymized) ======
+/* ============================ Marketplace ================================ */
 
-// DTO khusus marketplace (supaya tidak bentrok dengan PageCases milik owner)
+// MarketCaseItem is the list item shape for the public marketplace.
 type MarketCaseItem struct {
 	ID         uuid.UUID `json:"id"`
 	Title      string    `json:"title"`
 	Category   string    `json:"category"`
 	CreatedAt  time.Time `json:"created_at"`
 	Preview    string    `json:"preview"`
-	HasMyQuote bool      `json:"has_my_quote"` // FE bisa dipakai untuk disable tombol submit
+	HasMyQuote bool      `json:"has_my_quote"` // FE can use this to disable "submit quote"
 }
 
 type PageMarketCases struct {
@@ -376,8 +392,9 @@ type PageMarketCases struct {
 	Items    []MarketCaseItem `json:"items"`
 }
 
+// appLocation returns the app TZ from env or Asia/Singapore.
+// Falls back to a fixed zone when tzdb is not available.
 func appLocation() *time.Location {
-	// bisa dibaca dari env, default Asia/Singapore
 	if tz := os.Getenv("APP_TZ"); tz != "" {
 		if loc, err := time.LoadLocation(tz); err == nil {
 			return loc
@@ -386,11 +403,9 @@ func appLocation() *time.Location {
 	if loc, err := time.LoadLocation("Asia/Singapore"); err == nil {
 		return loc
 	}
-	// Fallback keras bila tzdb tidak ada di container
 	return time.FixedZone("SGT", 8*60*60) // UTC+8
 }
 
-// Marketplace godoc
 // @Summary      Marketplace (anonymized)
 // @Description  Lawyer browses OPEN cases (server-side filters & pagination; no client identity)
 // @Tags         marketplace
@@ -404,22 +419,22 @@ func appLocation() *time.Location {
 // @Failure      401  {object}  models.ErrorResponse
 // @Router       /marketplace [get]
 func (h *Handler) Marketplace(c *fiber.Ctx) error {
-	lawyerID := auth.MustUserID(c) // dipakai untuk HasMyQuote
+	lawyerID := auth.MustUserID(c) // used for HasMyQuote
 	page, size := parsePage(c)
 	category := strings.TrimSpace(c.Query("category"))
 	createdSince := c.Query("created_since") // ISO date (YYYY-MM-DD)
 
-	// Parse created_since in Asia/Singapore, simpan sebagai UTC untuk konsistensi dengan DB
+	// Parse created_since in app TZ; store as UTC for DB queries
 	var sinceUTC *time.Time
 	if createdSince != "" {
-		loc := appLocation() // <- tidak mungkin nil
-		// "2006-01-02" mewakili tengah malam lokal tanggal tsb
+		loc := appLocation()
 		if localMidnight, err := time.ParseInLocation("2006-01-02", createdSince, loc); err == nil {
 			u := localMidnight.UTC()
 			sinceUTC = &u
 		}
 	}
 
+	// Base query: only open cases
 	dbq := h.db.Model(&models.Case{}).Where("status = ?", models.CaseOpen)
 	if category != "" {
 		dbq = dbq.Where("category = ?", category)
@@ -428,11 +443,13 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 		dbq = dbq.Where("created_at >= ?", *sinceUTC)
 	}
 
+	// Count first
 	var total int64
 	if err := dbq.Count(&total).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
 
+	// Load page
 	var list []models.Case
 	if err := dbq.Order("created_at DESC").
 		Offset((page - 1) * size).
@@ -441,13 +458,13 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Ambil semua case_id yang ada di halaman ini
+	// IDs on page
 	caseIDs := make([]uuid.UUID, 0, len(list))
 	for _, cs := range list {
 		caseIDs = append(caseIDs, cs.ID)
 	}
 
-	// Cek mana yang sudah di-quote oleh lawyer (tanpa N+1)
+	// Build "HasMyQuote" without N+1
 	quotedMap := map[uuid.UUID]bool{}
 	if len(caseIDs) > 0 {
 		var quotedIDs []uuid.UUID
@@ -462,10 +479,10 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 		}
 	}
 
+	// Build items with redacted preview
 	items := make([]MarketCaseItem, 0, len(list))
 	for _, cs := range list {
 		preview := sanitize.Summary(sanitize.RedactPII(cs.Description), 240)
-
 		items = append(items, MarketCaseItem{
 			ID:         cs.ID,
 			Title:      cs.Title,
@@ -475,8 +492,6 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 			HasMyQuote: quotedMap[cs.ID],
 		})
 	}
-
-	// Normalisasi
 	if items == nil {
 		items = []MarketCaseItem{}
 	}
@@ -490,7 +505,8 @@ func (h *Handler) Marketplace(c *fiber.Ctx) error {
 	})
 }
 
-// Cancel Case godoc
+/* ============================= Cancel Case =============================== */
+
 // @Summary      Cancel case
 // @Description  Client cancels their own case (only if still open)
 // @Tags         cases
@@ -508,13 +524,14 @@ func (h *Handler) Cancel(c *fiber.Ctx) error {
 	clientID := auth.MustUserID(c)
 	id := c.Params("id")
 
-	// Parse optional comment
+	// Optional comment
 	var in ActionRequest
 	_ = c.BodyParser(&in)
 	if errs, _ := validation.Validate(in); errs != nil {
 		return validation.Respond(c, errs)
 	}
 
+	// Load + authorize
 	var cs models.Case
 	if err := h.db.First(&cs, "id = ?", id).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -529,17 +546,29 @@ func (h *Handler) Cancel(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "case cannot be cancelled")
 	}
 
+	// Update
 	old := cs.Status
 	if err := h.db.Model(&cs).Update("status", models.CaseCancelled).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
-	// Log history
-	utils.LogCaseHistory(c.Context(), h.db, cs.ID, uuid.MustParse(clientID), "cancelled", old, models.CaseCancelled, strings.TrimSpace(in.Comment))
+
+	// History
+	utils.LogCaseHistory(
+		c.Context(),
+		h.db,
+		cs.ID,
+		uuid.MustParse(clientID),
+		"cancelled",
+		old,
+		models.CaseCancelled,
+		strings.TrimSpace(in.Comment),
+	)
 
 	return c.JSON(fiber.Map{"status": "cancelled"})
 }
 
-// Close Case godoc
+/* ============================== Close Case =============================== */
+
 // @Summary      Close case
 // @Description  Client closes their own case (only if engaged)
 // @Tags         cases
@@ -557,13 +586,14 @@ func (h *Handler) Close(c *fiber.Ctx) error {
 	clientID := auth.MustUserID(c)
 	id := c.Params("id")
 
-	// Parse optional comment
+	// Optional comment
 	var in ActionRequest
 	_ = c.BodyParser(&in)
 	if errs, _ := validation.Validate(in); errs != nil {
 		return validation.Respond(c, errs)
 	}
 
+	// Load + authorize
 	var cs models.Case
 	if err := h.db.First(&cs, "id = ?", id).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -578,21 +608,31 @@ func (h *Handler) Close(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "only engaged cases can be closed")
 	}
 
+	// Update
 	old := cs.Status
 	if err := h.db.Model(&cs).Update("status", models.CaseClosed).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
-	// Log history
-	utils.LogCaseHistory(c.Context(), h.db, cs.ID, uuid.MustParse(clientID), "closed", old, models.CaseClosed, strings.TrimSpace(in.Comment))
+
+	// History
+	utils.LogCaseHistory(
+		c.Context(),
+		h.db,
+		cs.ID,
+		uuid.MustParse(clientID),
+		"closed",
+		old,
+		models.CaseClosed,
+		strings.TrimSpace(in.Comment),
+	)
 
 	return c.JSON(fiber.Map{"status": "closed"})
 }
 
-// === Shared helper ===
+/* ============================= List History ============================== */
 
-// List Case History godoc
 // @Summary      Case history
-// @Description  Riwayat perubahan case (owner & accepted lawyer)
+// @Description  List case status changes (owner & accepted lawyer only)
 // @Tags         cases
 // @Security     BearerAuth
 // @Produce      json
@@ -607,6 +647,7 @@ func (h *Handler) ListHistory(c *fiber.Ctx) error {
 	userID := auth.MustUserID(c)
 	role, _ := c.Locals("role").(string)
 
+	// Load minimal fields for auth check
 	var cs models.Case
 	if err := h.db.Select("id, client_id, status, accepted_lawyer_id").
 		First(&cs, "id = ?", id).Error; err != nil {
@@ -630,6 +671,7 @@ func (h *Handler) ListHistory(c *fiber.Ctx) error {
 		return fiber.ErrForbidden
 	}
 
+	// Fetch history ascending
 	var rows []models.CaseHistory
 	if err := h.db.
 		Where("case_id = ?", cs.ID).
@@ -638,6 +680,7 @@ func (h *Handler) ListHistory(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
+	// Map to DTO
 	out := make([]CaseHistoryDTO, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, CaseHistoryDTO{

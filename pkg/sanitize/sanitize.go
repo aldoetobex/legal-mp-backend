@@ -2,14 +2,19 @@ package sanitize
 
 import "regexp"
 
-// Email biasa (case-insensitive)
+/* ======================= Regex Definitions ======================= */
+
+// reEmail matches common email addresses (case-insensitive).
 var reEmail = regexp.MustCompile(`(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}`)
 
-// Telepon yang umum: +xx..., (xxx) xxx-xxxx, 08xx..., dsb
-// Catatan: karakter yang diizinkan hanya digit, spasi, tanda minus, titik, kurung, dan plus.
-// Minimal 9 digit total agar tidak terlalu agresif.
+// rePhone matches common phone numbers (e.g., +xx..., 08xx..., (xxx) xxx-xxxx).
+// Allowed characters: digits, spaces, dashes, dots, parentheses, plus.
+// Requires at least 9 digits total to reduce false positives.
 var rePhone = regexp.MustCompile(`\+?\d[\d\s\-\.$begin:math:text$$end:math:text$]{7,}\d`)
 
+/* ======================= Public Functions ======================== */
+
+// RedactPII replaces emails and phone numbers in a string with "[redacted ...]".
 func RedactPII(s string) string {
 	if s == "" {
 		return s
@@ -19,12 +24,14 @@ func RedactPII(s string) string {
 	return s
 }
 
-// Potong ringkasan untuk listing
+// Summary truncates a string to max characters and appends "…".
+// It tries to cut at the nearest space before the limit to avoid breaking words.
 func Summary(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
 	i := max
+	// Walk backward until a space is found
 	for i > 0 && i < len(s) && s[i] != ' ' {
 		i--
 	}

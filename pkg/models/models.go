@@ -6,6 +6,9 @@ import (
 	"github.com/google/uuid"
 )
 
+/* =============================== Enums ================================== */
+
+// Role defines the type of user in the system.
 type Role string
 
 const (
@@ -13,6 +16,7 @@ const (
 	RoleLawyer Role = "lawyer"
 )
 
+// CaseStatus defines lifecycle states for a case.
 type CaseStatus string
 
 const (
@@ -22,6 +26,7 @@ const (
 	CaseCancelled CaseStatus = "cancelled"
 )
 
+// QuoteStatus defines lifecycle states for a quote.
 type QuoteStatus string
 
 const (
@@ -30,6 +35,7 @@ const (
 	QuoteRejected QuoteStatus = "rejected"
 )
 
+// PayStatus defines lifecycle states for a payment.
 type PayStatus string
 
 const (
@@ -38,6 +44,9 @@ const (
 	PayFailed    PayStatus = "failed"
 )
 
+/* =============================== Entities =============================== */
+
+// User represents a client or lawyer.
 type User struct {
 	ID           uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
 	Email        string    `gorm:"uniqueIndex;not null"`
@@ -49,6 +58,7 @@ type User struct {
 	CreatedAt    time.Time
 }
 
+// Case represents a legal case created by a client.
 type Case struct {
 	ID          uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
 	ClientID    uuid.UUID `gorm:"type:uuid;not null;index"`
@@ -58,14 +68,17 @@ type Case struct {
 	Status      CaseStatus `gorm:"type:varchar(20);default:'open'"`
 	CreatedAt   time.Time
 
+	// Relations
 	Files  []CaseFile
 	Quotes []Quote
 
-	EngagedAt        *time.Time // <— tambahkan
-	AcceptedQuoteID  uuid.UUID  // <— tambahkan
-	AcceptedLawyerID uuid.UUID  // <— tambahkan
+	// Metadata for engaged case
+	EngagedAt        *time.Time
+	AcceptedQuoteID  uuid.UUID
+	AcceptedLawyerID uuid.UUID
 }
 
+// CaseFile represents a file uploaded to a case.
 type CaseFile struct {
 	ID           uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
 	CaseID       uuid.UUID `gorm:"type:uuid;not null;index"`
@@ -75,10 +88,11 @@ type CaseFile struct {
 	OriginalName string
 	CreatedAt    time.Time
 
-	// Tambahan: agar Preload("Case") dan cf.Case.* valid
+	// Relation back to case
 	Case Case `gorm:"foreignKey:CaseID;references:ID"`
 }
 
+// Quote represents a lawyer’s proposal for a case.
 type Quote struct {
 	ID          uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
 	CaseID      uuid.UUID `gorm:"type:uuid;not null;index:idx_case_lawyer,unique"`
@@ -91,27 +105,28 @@ type Quote struct {
 	UpdatedAt   time.Time
 }
 
+// Payment represents a payment attempt for a case’s accepted quote.
 type Payment struct {
 	ID                  uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
-	CaseID              uuid.UUID `gorm:"type:uuid;not null"` // HAPUS unique
-	QuoteID             uuid.UUID `gorm:"type:uuid;not null"` // HAPUS unique
+	CaseID              uuid.UUID `gorm:"type:uuid;not null"`
+	QuoteID             uuid.UUID `gorm:"type:uuid;not null"`
 	ClientID            uuid.UUID `gorm:"type:uuid;not null"`
-	StripeSessionID     *string   `gorm:"uniqueIndex:ux_pay_session_filled"` // nullable
-	StripePaymentIntent *string   `gorm:"uniqueIndex:ux_pay_intent_filled"`  // nullable
-	AmountCents         int       `gorm:"not null"`                          // pakai int64 untuk uang
+	StripeSessionID     *string   `gorm:"uniqueIndex:ux_pay_session_filled"` // Stripe Checkout session (optional)
+	StripePaymentIntent *string   `gorm:"uniqueIndex:ux_pay_intent_filled"`  // Stripe PaymentIntent (optional)
+	AmountCents         int       `gorm:"not null"`                          // stored in cents to avoid float issues
 	Status              PayStatus `gorm:"type:varchar(20);default:'initiated'"`
 	CreatedAt           time.Time `gorm:"not null;default:now()"`
 	UpdatedAt           time.Time `gorm:"not null;default:now()"`
 }
 
-// Audit log untuk setiap perubahan penting pada Case
+// CaseHistory is an audit log entry for important case changes.
 type CaseHistory struct {
 	ID        uuid.UUID  `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
 	CaseID    uuid.UUID  `gorm:"type:uuid;not null;index"`
-	ActorID   uuid.UUID  `gorm:"type:uuid;not null;index"`  // siapa yang melakukan (client/lawyer/system)
-	Action    string     `gorm:"type:varchar(50);not null"` // created, quote_submitted, accepted_quote, paid, cancelled, closed, dll
+	ActorID   uuid.UUID  `gorm:"type:uuid;not null;index"`  // who performed the action (client/lawyer/system)
+	Action    string     `gorm:"type:varchar(50);not null"` // e.g. created, quote_submitted, accepted_quote, paid, cancelled, closed
 	OldStatus CaseStatus `gorm:"type:varchar(20)"`
 	NewStatus CaseStatus `gorm:"type:varchar(20)"`
-	Reason    string     `gorm:"type:text"` // optional komentar/penjelasan
+	Reason    string     `gorm:"type:text"` // optional explanation/comment
 	CreatedAt time.Time  `gorm:"autoCreateTime"`
 }
