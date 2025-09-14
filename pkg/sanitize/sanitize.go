@@ -1,49 +1,27 @@
 package sanitize
 
-import (
-	"regexp"
-	"unicode"
-)
+import "regexp"
 
-// Email sederhana (case-insensitive)
-var reEmail = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+// Email biasa (case-insensitive)
+var reEmail = regexp.MustCompile(`(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}`)
 
-// Telepon: deretan karakter telepon umum (+, digit, spasi, dash, titik, kurung).
-// Kita ganti hanya jika memiliki >=8 digit agar tidak over-match.
-var rePhoneLike = regexp.MustCompile(`(?i)\+?[\d\-\s().]{8,}`)
-
-// hitung minimal jumlah digit di sebuah string
-func countDigits(s string) int {
-	n := 0
-	for _, r := range s {
-		if unicode.IsDigit(r) {
-			n++
-		}
-	}
-	return n
-}
+// Telepon yang umum: +xx..., (xxx) xxx-xxxx, 08xx..., dsb
+// Catatan: karakter yang diizinkan hanya digit, spasi, tanda minus, titik, kurung, dan plus.
+// Minimal 9 digit total agar tidak terlalu agresif.
+var rePhone = regexp.MustCompile(`\+?\d[\d\s\-\.$begin:math:text$$end:math:text$]{7,}\d`)
 
 func RedactPII(s string) string {
 	if s == "" {
 		return s
 	}
-	// Mask email
 	s = reEmail.ReplaceAllString(s, "[redacted email]")
-
-	// Mask nomor telepon hanya jika kandidat mengandung >=8 digit
-	s = rePhoneLike.ReplaceAllStringFunc(s, func(m string) string {
-		if countDigits(m) >= 8 {
-			return "[redacted phone]"
-		}
-		return m
-	})
-
+	s = rePhone.ReplaceAllString(s, "[redacted phone]")
 	return s
 }
 
-// Summary memotong teks ke panjang max, di batas spasi bila mungkin.
+// Potong ringkasan untuk listing
 func Summary(s string, max int) string {
-	if max <= 0 || len(s) <= max {
+	if len(s) <= max {
 		return s
 	}
 	i := max

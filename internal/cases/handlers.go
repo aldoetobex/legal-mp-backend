@@ -2,7 +2,10 @@ package cases
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -247,6 +250,14 @@ func (h *Handler) fetchPublicUser(uID uuid.UUID, withLawyerFields bool) *PublicU
 // @Failure      403  {object}  models.ErrorResponse
 // @Failure      404  {object}  models.ErrorResponse
 // @Router       /cases/{id} [get]
+
+// helper to hash filename for display
+func maskFileName(original string) string {
+	ext := filepath.Ext(original)
+	sum := sha1.Sum([]byte(original))
+	return hex.EncodeToString(sum[:]) + ext
+}
+
 func (h *Handler) GetDetail(c *fiber.Ctx) error {
 	id := c.Params("id")
 	userID := auth.MustUserID(c)
@@ -270,17 +281,28 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		cs.Quotes = []models.Quote{}
 	}
 
+	// 🔒 Mask filenames in the response
+	safeFiles := make([]models.CaseFile, len(cs.Files))
+	for i, f := range cs.Files {
+		f.OriginalName = maskFileName(f.OriginalName)
+		safeFiles[i] = f
+	}
+	cs.Files = safeFiles
+
 	switch role {
 	case string(models.RoleClient):
 		if cs.ClientID.String() != userID {
 			return fiber.ErrForbidden
 		}
 
-		// ⬇️ SENSOR PII di note saat case masih OPEN (belum deal)
-		if cs.Status == models.CaseOpen {
-			for i := range cs.Quotes {
-				cs.Quotes[i].Note = sanitize.RedactPII(cs.Quotes[i].Note)
+		// redact notes if still open
+		if cs.Status == models.CaseOpen && len(cs.Quotes) > 0 {
+			safeQuotes := make([]models.Quote, len(cs.Quotes))
+			for i, q := range cs.Quotes {
+				q.Note = sanitize.RedactPII(q.Note)
+				safeQuotes[i] = q
 			}
+			cs.Quotes = safeQuotes
 		}
 
 		resp := CaseDetailResponse{Case: cs}
@@ -290,11 +312,10 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		return c.JSON(resp)
 
 	case string(models.RoleLawyer):
-		// Lawyer hanya accepted di engaged/closed
 		if (cs.Status != models.CaseEngaged && cs.Status != models.CaseClosed) || cs.AcceptedLawyerID.String() != userID {
 			return fiber.ErrForbidden
 		}
-		// Kirim hanya accepted quote
+
 		if cs.AcceptedQuoteID != uuid.Nil {
 			var q models.Quote
 			if err := h.db.First(&q, "id = ?", cs.AcceptedQuoteID).Error; err == nil {
@@ -305,6 +326,7 @@ func (h *Handler) GetDetail(c *fiber.Ctx) error {
 		} else {
 			cs.Quotes = []models.Quote{}
 		}
+
 		resp := CaseDetailResponse{
 			Case:   cs,
 			Client: h.fetchPublicUser(cs.ClientID, false),

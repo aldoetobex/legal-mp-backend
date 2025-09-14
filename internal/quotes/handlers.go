@@ -14,6 +14,7 @@ import (
 
 	"github.com/aldoetobex/legal-mp-backend/internal/auth"
 	"github.com/aldoetobex/legal-mp-backend/pkg/models"
+	"github.com/aldoetobex/legal-mp-backend/pkg/sanitize"
 	"github.com/aldoetobex/legal-mp-backend/pkg/validation"
 )
 
@@ -194,8 +195,7 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 	page, size := parsePage(c)
 	status := strings.TrimSpace(c.Query("status"))
 
-	base := h.db.Table("quotes").
-		Where("quotes.lawyer_id = ?", lawyerID)
+	base := h.db.Table("quotes").Where("quotes.lawyer_id = ?", lawyerID)
 
 	if status != "" {
 		switch status {
@@ -206,27 +206,25 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		}
 	}
 
-	// Hitung total dulu (tanpa join agar murah)
 	var total int64
 	if err := base.Count(&total).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
 
-	// Ambil data + join cases untuk title/category/status
 	rows := make([]MyQuoteItem, 0, size)
 	if err := base.
 		Select(`
-            quotes.id,
-            quotes.case_id,
-            quotes.amount_cents,
-            quotes.days,
-            quotes.note,
-            quotes.status,
-            quotes.created_at,
-            cases.title      AS case_title,
-            cases.category   AS case_category,
-            cases.status     AS case_status
-        `).
+			quotes.id,
+			quotes.case_id,
+			quotes.amount_cents,
+			quotes.days,
+			quotes.note,
+			quotes.status,
+			quotes.created_at,
+			cases.title    AS case_title,
+			cases.category AS case_category,
+			cases.status   AS case_status
+		`).
 		Joins("JOIN cases ON cases.id = quotes.case_id").
 		Order("quotes.created_at DESC").
 		Offset((page - 1) * size).
@@ -235,9 +233,12 @@ func (h *Handler) ListMine(c *fiber.Ctx) error {
 		return fiber.ErrInternalServerError
 	}
 
-	// Normalisasi agar tidak null
-	if rows == nil {
-		rows = []MyQuoteItem{}
+	// 🚨 Redact NOTE kalau case masih OPEN atau CANCELLED
+	for i := range rows {
+		if rows[i].CaseStatus == string(models.CaseOpen) ||
+			rows[i].CaseStatus == string(models.CaseCancelled) {
+			rows[i].Note = sanitize.RedactPII(rows[i].Note)
+		}
 	}
 
 	return c.JSON(fiber.Map{
@@ -286,35 +287,58 @@ func (h *Handler) ListByCaseForOwner(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid case id")
 	}
 
-	var cnt int64
-	if err := h.db.Model(&models.Case{}).
-		Where("id = ? AND client_id = ?", caseID, clientID).
-		Count(&cnt).Error; err != nil {
+	// Ambil status case + verifikasi kepemilikan
+	var cs struct {
+		ID       uuid.UUID
+		ClientID uuid.UUID
+		Status   models.CaseStatus
+	}
+	if err := h.db.
+		Model(&models.Case{}).
+		Select("id, client_id, status").
+		Where("id = ?", caseID).
+		First(&cs).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fiber.ErrNotFound
+		}
 		return fiber.ErrInternalServerError
 	}
-	if cnt == 0 {
+	if cs.ClientID.String() != clientID {
 		return fiber.ErrForbidden
 	}
 
 	page, size := parsePage(c)
-	q := h.db.Model(&models.Quote{}).Where("case_id = ?", caseID)
+
+	// Query semua quotes untuk case ini (tetap ditampilkan semua)
+	q := h.db.Model(&models.Quote{}).Where("case_id = ?", cs.ID)
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
 
-	// --- inisialisasi slice agar tidak null ---
-	rows := make([]caseQuoteItem, 0)
-	if err := q.Order("created_at DESC").
-		Offset((page - 1) * size).Limit(size).
+	// Selalu inisialisasi slice agar tidak null
+	rows := make([]caseQuoteItem, 0, size)
+	if err := q.
+		Order("created_at DESC").
+		Offset((page - 1) * size).
+		Limit(size).
 		Scan(&rows).Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
 
+	// *** Redact hanya NOTE saat status case masih OPEN ***
+	if cs.Status == models.CaseOpen || cs.Status == models.CaseCancelled {
+		for i := range rows {
+			rows[i].Note = sanitize.RedactPII(rows[i].Note)
+		}
+	}
+
 	return c.JSON(fiber.Map{
-		"page": page, "pageSize": size, "total": total,
-		"pages": int(math.Ceil(float64(total) / float64(size))),
-		"items": rows, // [] saat kosong
+		"page":     page,
+		"pageSize": size,
+		"total":    total,
+		"pages":    int(math.Ceil(float64(total) / float64(size))),
+		"items":    rows, // selalu [] ketika kosong
 	})
 }
