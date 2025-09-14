@@ -93,14 +93,15 @@ type Quote struct {
 
 type Payment struct {
 	ID                  uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
-	CaseID              uuid.UUID `gorm:"unique;not null"`
-	QuoteID             uuid.UUID `gorm:"unique;not null"`
+	CaseID              uuid.UUID `gorm:"type:uuid;not null"` // HAPUS unique
+	QuoteID             uuid.UUID `gorm:"type:uuid;not null"` // HAPUS unique
 	ClientID            uuid.UUID `gorm:"type:uuid;not null"`
-	StripeSessionID     string    `gorm:"unique;not null"`
-	StripePaymentIntent string    `gorm:"unique"`
-	AmountCents         int       `gorm:"not null"`
+	StripeSessionID     *string   `gorm:"uniqueIndex:ux_pay_session_filled"` // nullable
+	StripePaymentIntent *string   `gorm:"uniqueIndex:ux_pay_intent_filled"`  // nullable
+	AmountCents         int       `gorm:"not null"`                          // pakai int64 untuk uang
 	Status              PayStatus `gorm:"type:varchar(20);default:'initiated'"`
-	CreatedAt           time.Time
+	CreatedAt           time.Time `gorm:"not null;default:now()"`
+	UpdatedAt           time.Time `gorm:"not null;default:now()"`
 }
 
 // Audit log untuk setiap perubahan penting pada Case
