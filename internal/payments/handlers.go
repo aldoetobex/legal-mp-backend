@@ -360,7 +360,7 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.ErrBadRequest
 		}
 
-		// payment_id dari metadata atau client_reference_id
+		// Ambil payment_id (ID payment internal kita) dari metadata / client_reference_id
 		pidStr := ""
 		if s.Metadata != nil && s.Metadata["payment_id"] != "" {
 			pidStr = s.Metadata["payment_id"]
@@ -375,8 +375,10 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.NewError(http.StatusBadRequest, "invalid payment_id")
 		}
 
+		// Mulai transaksi
 		tx := h.db.Begin()
 
+		// Lock payment (idempotent safety)
 		var pay models.Payment
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			First(&pay, "id = ?", pid).Error; err != nil {
@@ -386,12 +388,29 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			}
 			return fiber.ErrInternalServerError
 		}
-		// Idempotent
 		if pay.Status == models.PayPaid {
 			tx.Rollback()
 			return c.SendStatus(http.StatusOK)
 		}
 
+		// Simpan PaymentIntent LEBIH AWAL (sekali saja) lalu sinkronkan ke struct in-memory
+		if s.PaymentIntent != nil && s.PaymentIntent.ID != "" {
+			piID := s.PaymentIntent.ID
+			if pay.StripePaymentIntent == nil || *pay.StripePaymentIntent == "" {
+				if err := tx.Model(&models.Payment{}).
+					Where("id = ?", pay.ID).
+					Updates(map[string]any{
+						"stripe_payment_intent": &piID,
+					}).Error; err != nil {
+					tx.Rollback()
+					return fiber.ErrInternalServerError
+				}
+			}
+			// sinkronkan agar langsung bisa dipakai untuk logging
+			pay.StripePaymentIntent = &piID
+		}
+
+		// Lock case & ambil quote
 		var cs models.Case
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			First(&cs, "id = ?", pay.CaseID).Error; err != nil {
@@ -404,11 +423,13 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			return fiber.ErrInternalServerError
 		}
 
+		// Validasi jumlah
 		if pay.AmountCents != q.AmountCents {
 			tx.Rollback()
 			return fiber.NewError(http.StatusConflict, "amount mismatch")
 		}
 
+		// Finalisasi: terima 1 quote, tolak lainnya, status case → engaged
 		if cs.Status == models.CaseOpen {
 			if err := tx.Model(&models.Quote{}).Where("id = ?", q.ID).
 				Update("status", models.QuoteAccepted).Error; err != nil {
@@ -433,11 +454,11 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 				return fiber.ErrInternalServerError
 			}
 
+			// Build reason menggunakan stripe_payment_intent dari DB (tanpa call ke Stripe)
 			reason := "payment completed (stripe)"
 			if pay.StripePaymentIntent != nil && *pay.StripePaymentIntent != "" {
 				reason = fmt.Sprintf("payment completed (stripe: %s)", *pay.StripePaymentIntent)
 			}
-
 			utils.LogCaseHistory(
 				c.Context(),
 				tx,
@@ -450,25 +471,13 @@ func (h *Handler) StripeWebhook(c *fiber.Ctx) error {
 			)
 		}
 
-		// Simpan payment_intent sebagai POINTER bila tersedia
-		if s.PaymentIntent != nil && s.PaymentIntent.ID != "" {
-			pi := s.PaymentIntent.ID
-			if err := tx.Model(&models.Payment{}).Where("id = ?", pay.ID).
-				Updates(map[string]any{
-					"status":                models.PayPaid,
-					"stripe_payment_intent": &pi,
-				}).Error; err != nil {
-				tx.Rollback()
-				return fiber.ErrInternalServerError
-			}
-		} else {
-			if err := tx.Model(&models.Payment{}).Where("id = ?", pay.ID).
-				Updates(map[string]any{
-					"status": models.PayPaid,
-				}).Error; err != nil {
-				tx.Rollback()
-				return fiber.ErrInternalServerError
-			}
+		// Tandai payment sebagai PAID (tidak mengubah PI lagi)
+		if err := tx.Model(&models.Payment{}).Where("id = ?", pay.ID).
+			Updates(map[string]any{
+				"status": models.PayPaid,
+			}).Error; err != nil {
+			tx.Rollback()
+			return fiber.ErrInternalServerError
 		}
 
 		if err := tx.Commit().Error; err != nil {
