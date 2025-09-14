@@ -86,6 +86,7 @@ func parsePage(c *fiber.Ctx) (page, size int) {
 // @Failure      409  {object}  models.ErrorResponse  "immutable or case not open"
 // @Failure      500  {object}  models.ErrorResponse
 // @Router       /quotes [post]
+// quotes/handlers.go
 func (h *Handler) Upsert(c *fiber.Ctx) error {
 	lawyerIDStr := auth.MustUserID(c)
 
@@ -93,47 +94,62 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 	if err := c.BodyParser(&in); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid json")
 	}
-	// Validation (Laravel-style)
+	// input validation
 	if errs, _ := validation.Validate(in); errs != nil {
 		return validation.Respond(c, errs)
 	}
 
 	caseID, err := uuid.Parse(strings.TrimSpace(in.CaseID))
 	if err != nil {
-		// Defensive: should have been caught by validator uuid4
 		return fiber.NewError(fiber.StatusBadRequest, "invalid case_id")
 	}
-	lawyerID, _ := uuid.Parse(lawyerIDStr)
+	lawyerID := uuid.MustParse(lawyerIDStr)
 
-	tx := h.db.Begin()
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// 1) Ensure case is still OPEN (row lock to avoid race)
+	// ---- Early check: ada & harus OPEN (tanpa TX supaya error clear & cepat) ----
 	var cs models.Case
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		First(&cs, "id = ?", caseID).Error; err != nil {
+	if err := h.db.First(&cs, "id = ?", caseID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			tx.Rollback()
 			return fiber.ErrNotFound
 		}
-		tx.Rollback()
 		return fiber.ErrInternalServerError
 	}
 	if cs.Status != models.CaseOpen {
-		tx.Rollback()
 		return fiber.NewError(fiber.StatusConflict, "case is not open")
 	}
 
-	// 2) Find existing quote for (case_id, lawyer_id)
+	// ---- TX + row lock untuk hindari race dengan accept/close ----
+	tx := h.db.Begin()
+	if tx.Error != nil {
+		return fiber.ErrInternalServerError
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			_ = tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	// Lock ulang baris case (defensive bila status bisa berubah saat race)
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		First(&cs, "id = ?", caseID).Error; err != nil {
+		_ = tx.Rollback()
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fiber.ErrNotFound
+		}
+		return fiber.ErrInternalServerError
+	}
+	if cs.Status != models.CaseOpen {
+		_ = tx.Rollback()
+		return fiber.NewError(fiber.StatusConflict, "case is not open")
+	}
+
+	// Satu quote aktif per (case_id, lawyer_id): insert baru atau update kalau masih PROPOSED
 	var q models.Quote
 	err = tx.Where("case_id = ? AND lawyer_id = ?", caseID, lawyerID).First(&q).Error
+
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		// Insert new
+		// INSERT baru
 		q = models.Quote{
 			CaseID:      caseID,
 			LawyerID:    lawyerID,
@@ -145,34 +161,48 @@ func (h *Handler) Upsert(c *fiber.Ctx) error {
 			UpdatedAt:   time.Now(),
 		}
 		if err := tx.Create(&q).Error; err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fiber.ErrInternalServerError
 		}
+
 	case err == nil:
-		// Update only if still PROPOSED
+		// Hanya boleh update kalau masih proposed
 		if q.Status != models.QuoteProposed {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fiber.NewError(fiber.StatusConflict, "quote is immutable (already accepted/rejected)")
 		}
+
+		// ❗ Cek kepemilikan quote
+		if q.LawyerID != lawyerID {
+			_ = tx.Rollback()
+			return fiber.ErrForbidden
+		}
+
 		if err := tx.Model(&q).Updates(map[string]any{
 			"amount_cents": in.AmountCents,
 			"days":         in.Days,
 			"note":         strings.TrimSpace(in.Note),
 			"updated_at":   time.Now(),
 		}).Error; err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fiber.ErrInternalServerError
 		}
+
 	default:
-		tx.Rollback()
+		_ = tx.Rollback()
 		return fiber.ErrInternalServerError
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		return fiber.ErrInternalServerError
 	}
+
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"id": q.ID, "status": q.Status, "amount_cents": q.AmountCents, "days": q.Days, "note": q.Note,
+		"id":           q.ID,
+		"status":       q.Status,
+		"amount_cents": q.AmountCents,
+		"days":         q.Days,
+		"note":         strings.TrimSpace(q.Note),
 	})
 }
 
